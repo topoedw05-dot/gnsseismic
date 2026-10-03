@@ -778,6 +778,7 @@ TR = {
     "menu_add_hitarget": {"es": "Hi-Target (.csv/.raw)", "en": "Hi-Target (.csv/.raw)"},
     "menu_add_chcnav": {"es": "CHCNav (.rw5)", "en": "CHCNav (.rw5)"},
     "menu_add_stonex": {"es": "Stonex (.PD)", "en": "Stonex (.PD)"},
+    "menu_add_surpad": {"es": "SurPad (.rw5)", "en": "SurPad (.rw5)"},
     "btn_remove_dc": {"es": "Quitar", "en": "Remove"},
     "tip_btn_remove_dc": {
         "es": "Quita de la lista el/los archivo(s) seleccionado(s) -- también borra la previsualización, la capa del mapa y la corrección de base si dependían de ese archivo.",
@@ -1342,6 +1343,11 @@ TR = {
     # contenido (`stonex_parser.looks_like_stonex_db`) se mantiene
     # además, como segunda validación.
     "filter_stonex_db": {"es": "Archivos PD (*.pd)", "en": "PD files (*.pd)"},
+    "dlg_add_surpad_title": {"es": "Seleccionar archivos .rw5 de SurPad", "en": "Select SurPad .rw5 files"},
+    # SurPad exporta un .rw5 de la misma familia de formato que
+    # LandStar/CHCNav -- se reutiliza el mismo filtro de extensión
+    # (ver `agregar_surpad()`/chcnav_parser.py).
+    "filter_surpad_rw5": {"es": "Archivos RW5 (*.rw5);;Todos (*.*)", "en": "RW5 files (*.rw5);;All files (*.*)"},
     "err_stonex_wrong_extension": {
         "es": "{name}: sólo se reconocen archivos con extensión .PD.",
         "en": "{name}: only files with a .PD extension are recognized.",
@@ -1382,6 +1388,10 @@ TR = {
     "log_stonex_summary": {
         "es": "{name}  —  {n} puntos Stonex",
         "en": "{name}  —  {n} Stonex points",
+    },
+    "log_surpad_summary": {
+        "es": "{name}  —  {n} puntos SurPad ({con_calidad} con estadísticas de calidad, {base} de base)",
+        "en": "{name}  —  {n} SurPad points ({con_calidad} with quality stats, {base} base)",
     },
     "log_dc_warnings": {
         "es": "[{name}] {n} advertencia(s) al leer el archivo.",
@@ -1639,6 +1649,17 @@ TR = {
         "es": "Vista previa de campo (sin subir)",
         "en": "Field data preview (not uploaded)",
     },
+    # Pedido explícito del usuario: cuando TODOS los puntos de la
+    # previsualización vienen de un único archivo cargado, la capa
+    # temporal del mapa debe mostrar el nombre de ese archivo en vez del
+    # título genérico de arriba (que no decía nada de cuál archivo era) --
+    # ver `_actualizar_capa_provisional_preview`. Cuando hay más de un
+    # archivo cargado a la vez, se mantiene el título genérico (no hay un
+    # único nombre de archivo que mostrar).
+    "layer_preview_provisional_archivo": {
+        "es": "{archivo} (vista previa, sin subir)",
+        "en": "{archivo} (preview, not uploaded)",
+    },
     "layer_preplot_match_preview": {
         "es": "Preplot coincidente (vista previa)",
         "en": "Matching preplot (preview)",
@@ -1688,7 +1709,19 @@ TR = {
     "legend_fix": {"es": "Hi-Target: RTK Fijo", "en": "Hi-Target: RTK Fix"},
     "legend_float": {"es": "Hi-Target: RTK Flotante", "en": "Hi-Target: RTK Float"},
     "legend_calc": {"es": "Hi-Target: Cálculo", "en": "Hi-Target: Calculated"},
-    "legend_base": {"es": "Hi-Target: Base", "en": "Hi-Target: Base"},
+    # SIN nombre de marca por delante (corregido en esta ronda, a pedido
+    # explícito del usuario al ver "Hi-Target: Base" en la previsualización
+    # de un archivo de CHCNav/SurPad): a diferencia de FIX/FLOAT/CALC
+    # (exclusivos de Hi-Target, derivados de su "Estado" -- ver
+    # `_hitarget_tipo_code`), el tipo "BASE" lo producen TODAS las marcas
+    # con ocupación de base RTK -- Hi-Target, DC (`dc_parser.py`), CHCNav/
+    # SurPad (registro 'BP' o sufijo "--BASE", ver `chcnav_parser.py`) y
+    # Stonex -- así que "Hi-Target: Base" era directamente incorrecto para
+    # las otras cuatro. Mismo criterio ya aplicado a LD/CT/CHKAM/CHKPM en
+    # la v2.26.0 (ver la nota junto a `COLOR_POR_TIPO` en
+    # gnsseismic_windows.py): sin confirmar que el significado sea
+    # idéntico entre marcas, la etiqueta queda neutral.
+    "legend_base": {"es": "Base", "en": "Base"},
     # Códigos de sufijo/clasificación de punto tal cual los trae el
     # archivo de origen (.rw5 de CHCNav -- ver chcnav_parser.py -- o la
     # base de Stonex -- ver stonex_parser.py) -- NO se traduce/adivina su

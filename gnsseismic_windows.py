@@ -263,6 +263,17 @@ COLOR_DUPLICADO_BD = QColor(255, 120, 120)
 # Stonex. Cualquier código nuevo que otra marca reutilice en el futuro
 # queda cubierto por la misma razón -- por eso la leyenda de estos
 # códigos es siempre el código tal cual, sin nombre de marca.
+#
+# IMPORTANTE (ronda siguiente a la v2.62.6): el mismo criterio de arriba
+# se le había quedado sin aplicar a "BASE" -- su etiqueta decía
+# "Hi-Target: Base" a pesar de que, a diferencia de FIX/FLOAT/CALC (esos
+# sí exclusivos de Hi-Target, derivados de su "Estado"), el tipo "BASE"
+# lo produce CUALQUIER marca con ocupación de base RTK: Hi-Target, DC,
+# CHCNav/SurPad (registro 'BP' o sufijo "--BASE") y Stonex. El usuario lo
+# reportó al ver "Hi-Target: Base" en la previsualización de un archivo
+# de CHCNav/SurPad (sin ningún dato de Hi-Target de por medio) -- se
+# corrigió la clave `legend_base` en i18n.py para que diga sólo "Base",
+# sin nombre de marca, igual que LD/CT/CHKAM/CHKPM.
 COLOR_POR_TIPO = {
     "KI": COLOR_KI,
     "SO": COLOR_SO,
@@ -1363,6 +1374,7 @@ class GNSSeismicController(QWidget):
         ("menu_add_hitarget", "agregar_hitarget"),
         ("menu_add_chcnav", "agregar_chcnav"),
         ("menu_add_stonex", "agregar_stonex"),
+        ("menu_add_surpad", "agregar_surpad"),
     )
 
     def __init__(self, iface, project: QgsProject, parent=None):
@@ -1379,7 +1391,13 @@ class GNSSeismicController(QWidget):
         self.hitarget_files = []  # list[hitarget_parser.HiTargetFile]
         self.chcnav_files = []  # list[chcnav_parser.ChcnavFile]
         self.stonex_files = []  # list[stonex_parser.StonexFile]
-        self._campo_file_refs = []  # [(origen, path), ...] alineado con self.lst_dc, origen: "DC"|"HITARGET"|"CHCNAV"|"STONEX"
+        # SurPad exporta un .rw5 de la misma familia de formato que
+        # LandStar/CHCNav (mismos códigos de registro JB/MO/BP/LS/GPS),
+        # así que se reutiliza el mismo `chcnav_parser.py` tal cual --
+        # ver `agregar_surpad()` -- y por eso esta lista guarda también
+        # objetos `chcnav_parser.ChcnavFile`, no un tipo propio.
+        self.surpad_files = []  # list[chcnav_parser.ChcnavFile] (parseados con chcnav_parser, ver agregar_surpad)
+        self._campo_file_refs = []  # [(origen, path), ...] alineado con self.lst_dc, origen: "DC"|"HITARGET"|"CHCNAV"|"STONEX"|"SURPAD"
         self.design_points = []  # list[dict] con las coordenadas ya transformadas del "diseño" (CSV o PREPLOT)
         self._origen_diseno_label = ""  # texto para la columna Origen_Diseno al subir COMPARACION
         self.match_result = None
@@ -4178,6 +4196,44 @@ class GNSSeismicController(QWidget):
             if cf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(cf.warnings)))
 
+    def agregar_surpad(self):
+        # SurPad (app de campo usada con equipos de varias marcas, no
+        # un fabricante propio de receptor) exporta un .rw5 de la misma
+        # familia de formato que LandStar/CHCNav -- mismos códigos de
+        # registro JB/MO/BP/LS/GPS de 2 letras pegadas a su valor --
+        # verificado contra un archivo real del usuario (`LASUIZA.rw5`,
+        # 1239 puntos): se parsea sin cambios con `chcnav_parser.py`
+        # (ver la nota del formato alterno "Avg/Min/Max" del bloque de
+        # calidad en su docstring, agregada en esta misma ronda para
+        # que los puntos con lecturas promediadas también completen
+        # SATS/PDOP/HDOP/VDOP). Se guarda en `self.surpad_files` (no en
+        # `self.chcnav_files`) para que el usuario vea un ítem
+        # "SurPad" distinto en la lista, aunque el objeto en memoria
+        # sea el mismo `chcnav_parser.ChcnavFile`/`ChcnavPoint` -- el
+        # resto del código (preview, subida a POSTPLOT, tipo-code,
+        # modo de levantamiento) los trata igual que a CHCNav por
+        # duck-typing, sin necesitar un parser ni un dataclass propios.
+        paths, _ = QFileDialog.getOpenFileNames(self, self.t("dlg_add_surpad_title"), "", self.t("filter_surpad_rw5"))
+        if not paths:
+            return
+        for p in paths:
+            try:
+                cf = chcnav_parser.parse_rw5_file(p)
+            except Exception as e:
+                QMessageBox.warning(self, self.t("warn_read_file_title"), f"{os.path.basename(p)}:\n{e}")
+                continue
+            self.surpad_files.append(cf)
+            self._campo_file_refs.append(("SURPAD", cf.path))
+            n_con_calidad = sum(1 for pt in cf.points if pt.status is not None)
+            n_base = sum(1 for pt in cf.points if pt.is_base)
+            resumen = self.t(
+                "log_surpad_summary", name=os.path.basename(p), n=cf.n_points,
+                con_calidad=n_con_calidad, base=n_base,
+            )
+            self.lst_dc.addItem(resumen)
+            if cf.warnings:
+                self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(cf.warnings)))
+
     def agregar_stonex(self):
         # El archivo de Stonex es una base de datos SQLite. Hasta la
         # v2.27.0 se aceptaba cualquier extensión y se confirmaba el
@@ -4231,6 +4287,8 @@ class GNSSeismicController(QWidget):
                 self.chcnav_files = [f for f in self.chcnav_files if f.path != path]
             elif origen == "STONEX":
                 self.stonex_files = [f for f in self.stonex_files if f.path != path]
+            elif origen == "SURPAD":
+                self.surpad_files = [f for f in self.surpad_files if f.path != path]
             removidos.append((origen, path))
 
         if not removidos:
@@ -4299,7 +4357,7 @@ class GNSSeismicController(QWidget):
         un archivo de campo nuevo"."""
         if not self._require_project():
             return
-        if not self.dc_files and not self.hitarget_files and not self.chcnav_files and not self.stonex_files:
+        if not self.dc_files and not self.hitarget_files and not self.chcnav_files and not self.stonex_files and not self.surpad_files:
             QMessageBox.information(self, self.t("info_nothing_to_import_title"), self.t("info_nothing_to_import_body"))
             return
 
@@ -4785,6 +4843,64 @@ class GNSSeismicController(QWidget):
                     ),
                 })
 
+        # SurPad reutiliza chcnav_parser.py tal cual (ver agregar_surpad),
+        # así que este loop es una copia casi exacta del de arriba para
+        # CHCNAV -- sólo cambia "origen"/"dc_idx" (clave propia en
+        # `ediciones_previas` para no mezclar ediciones con un archivo
+        # CHCNav real que tenga el mismo nombre) e "instrument"/
+        # "modo_texto" para que el usuario vea "SurPad" en vez de
+        # "CHCNav" en la previsualización.
+        for sp_idx, cf in enumerate(self.surpad_files):
+            for point_idx, p in enumerate(cf.points):
+                track, bin_ = _track_bin_heuristic(p.name, line_digits)
+                geoid_h = None
+                local_h = None
+                if aplicar_geoide:
+                    geoid_h = self._sample_geoid_undulation(p.lon, p.lat)
+                    if geoid_h is not None:
+                        local_h = geoid_utils.orthometric_height(p.height, geoid_h)
+                previa = ediciones_previas.get(("SURPAD", cf.path, p.line_no))
+                filas.append({
+                    "origen": "SURPAD", "dc_idx": sp_idx, "point_idx": point_idx, "line_no": p.line_no,
+                    "archivo": os.path.basename(cf.path), "archivo_path": cf.path,
+                    "job_name": None, "instrument": "SurPad",
+                    "tipo": _chcnav_tipo_code(p),
+                    # Mismo criterio que CHCNAV arriba: se muestra el
+                    # STATUS tal cual (ej. "FIJO"), sin traducirlo --
+                    # queda en "N/D" para los puntos con el bloque
+                    # alterno "Avg/Min/Max" (ver chcnav_parser.py), que
+                    # no trae ese dato.
+                    "calidad": (p.status if p.status else self.t("calidad_nd")),
+                    "modo_texto": (f"RTK SurPad ({p.status})" if p.status else "RTK SurPad"),
+                    "nombre": (previa["nombre"] if previa else p.name),
+                    "nombre_original": p.name,
+                    "is_base": p.is_base,
+                    "lat": p.lat, "lon": p.lon, "altura_wgs84": p.height,
+                    "track": track, "bin": bin_,
+                    "geoid_h": geoid_h, "local_h": local_h,
+                    "hi": (previa.get("hi") if previa else p.ant_height),
+                    "comentario": (previa.get("comentario") if previa else ""),
+                    "incluir": (previa.get("incluir", not p.is_base) if previa else (not p.is_base)),
+                    "subido": (previa.get("subido", False) if previa else False),
+                    "match": None,
+                    "n_sats": p.n_sats, "pdop": p.pdop, "hdop": p.hdop, "vdop": p.vdop,
+                    "n_epochs": p.n_epochs, "occupation_seconds": None,
+                    "gps_baseline_m": p.base_baseline_m, "gps_base_station": p.base_station_name,
+                    "survey_time_local": (
+                        f"{p.date_text} {p.time_text}" if (p.date_text and p.time_text)
+                        else (p.date_text or p.time_text)
+                    ),
+                    "descriptor": (previa.get("descriptor") if previa else ""),
+                    "survey_mode_text": (
+                        previa.get("survey_mode_text") if previa
+                        else SURVEY_MODE_TEXTO_EN[_survey_mode_key_valor(p.status)[0]]
+                    ),
+                    "survey_mode_value": (
+                        previa.get("survey_mode_value") if previa
+                        else _survey_mode_key_valor(p.status)[1]
+                    ),
+                })
+
         for st_idx, sf in enumerate(self.stonex_files):
             for point_idx, p in enumerate(sf.points):
                 track, bin_ = _track_bin_heuristic(p.name, line_digits)
@@ -4968,7 +5084,7 @@ class GNSSeismicController(QWidget):
         total_parseados = len(filas)
         filas = [
             f for f in filas
-            if f.get("origen") in ("CHCNAV", "HITARGET", "STONEX")
+            if f.get("origen") in ("CHCNAV", "HITARGET", "STONEX", "SURPAD")
             or f.get("is_base")
             or f.get("n_sats") is not None
             or f.get("pdop") is not None
@@ -6768,9 +6884,11 @@ class GNSSeismicController(QWidget):
         hitarget_by_path = {hf.path: hf for hf in self.hitarget_files}
         chcnav_by_path = {cf.path: cf for cf in self.chcnav_files}
         stonex_by_path = {sf.path: sf for sf in self.stonex_files}
+        surpad_by_path = {sf.path: sf for sf in self.surpad_files}
         _archivo_by_origen = {
             "DC": dc_by_path, "HITARGET": hitarget_by_path,
             "CHCNAV": chcnav_by_path, "STONEX": stonex_by_path,
+            "SURPAD": surpad_by_path,
         }
 
         total_insertadas = 0
@@ -7014,7 +7132,10 @@ class GNSSeismicController(QWidget):
         POSTPLOT. A diferencia de la capa "Puntos levantados" que crea
         `_crear_capa_puntos_dc()` al subir, ésta se reemplaza por
         completo cada vez que se vuelve a previsualizar (nunca se
-        acumulan capas provisionales viejas)."""
+        acumulan capas provisionales viejas). Si toda la previsualización
+        viene de un único archivo cargado, la capa se nombra con ese
+        archivo en vez de un título genérico (ver `layer_preview_
+        provisional_archivo` en i18n.py)."""
         capa_vieja = self._provisional_preview_layer
         if capa_vieja is not None:
             try:
@@ -7029,7 +7150,22 @@ class GNSSeismicController(QWidget):
         if not self._import_preview:
             return
 
-        layer = QgsVectorLayer("Point?crs=EPSG:4326", self.t("layer_preview_provisional"), "memory")
+        # Pedido explícito del usuario: si TODA la previsualización viene
+        # de un único archivo cargado, la capa temporal se nombra con ese
+        # archivo (ej. "LASUIZA.rw5 (vista previa, sin subir)") en vez del
+        # título genérico de siempre -- antes, aunque sólo hubiera un
+        # archivo cargado, el título no decía cuál era. Con más de un
+        # archivo cargado a la vez no hay un único nombre que mostrar, así
+        # que se mantiene el título genérico.
+        archivos_presentes = sorted({
+            fila["archivo"] for fila in self._import_preview if fila.get("archivo")
+        })
+        if len(archivos_presentes) == 1:
+            nombre_capa = self.t("layer_preview_provisional_archivo", archivo=archivos_presentes[0])
+        else:
+            nombre_capa = self.t("layer_preview_provisional")
+
+        layer = QgsVectorLayer("Point?crs=EPSG:4326", nombre_capa, "memory")
         prov = layer.dataProvider()
         prov.addAttributes([
             QgsField("nombre", FIELD_STRING),

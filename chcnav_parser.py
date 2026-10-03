@@ -71,6 +71,36 @@ Formato del archivo (texto, delimitado por comas):
     transformar la latitud/longitud del registro GPS con el CRS de
     trabajo del proyecto.
 
+    Formato alterno del bloque de calidad ("Avg/Min/Max", sin
+    "STATUS:") -- VERIFICADO contra un archivo .rw5 real exportado por
+    la app de campo SurPad (`LASUIZA.rw5`, 1239 puntos): para un punto
+    tomado con lecturas repetidas/promediadas, en vez de la línea
+    única "--HSDV:..., STATUS:..., SATS:..., PDOP:..." de arriba,
+    SurPad escribe una línea POR CAMPO, cada una con su propio
+    promedio/mínimo/máximo, ej.:
+
+        --HDOP Avg: 0.6000 Min: 0.6000 Max: 0.6000
+        --VDOP Avg: 1.0000 Min: 1.0000 Max: 1.0000
+        --PDOP Avg: 1.2000 Min: 1.2000 Max: 1.2000
+        --Number of Satellites Avg: 11 Min: 11 Max: 12
+
+    Este módulo reconoce también estas 4 líneas (independientes entre
+    sí, cada una opcional) como alternativa a la línea con "STATUS:",
+    usando el valor "Avg" de cada una para PDOP/HDOP/VDOP/SATS -- NUNCA
+    se infiere STATUS de aquí (este formato no trae ningún dato de
+    fijo/flotante; `point.status` queda en None, igual que si el
+    archivo no traiga ningún bloque de calidad). "Valid Readings: N of
+    M" sigue siendo la fuente de "número de épocas" para este formato
+    también -- el archivo de referencia lo trae igual en ambos casos.
+    Esto permite reutilizar este mismo parser, sin ningún cambio en su
+    lógica de registros GPS/BP/LS, para importar archivos .rw5 de
+    SurPad (misma familia de formato que LandStar/CHCNav -- mismos
+    códigos de registro JB/MO/BP/LS/GPS de 2 letras pegadas a su
+    valor): de 1232 puntos de campo (no-base) del archivo de
+    referencia, 1198 ya traían el bloque "STATUS:" de arriba sin
+    cambios, y los 34 restantes (lecturas promediadas iniciales de
+    cada punto) sólo se completan gracias a este formato alterno.
+
     Tipos de registro y su tratamiento:
       GPS  -> el punto a importar (lat/lon/altura elipsoidal WGS84 +
               sufijo de clasificación + estadísticas de calidad
@@ -183,6 +213,18 @@ _GRID_ADJ_RE = re.compile(r"^--Grid Adjustment:\s*(.*)$", re.IGNORECASE)
 # "--Valid Readings: 5 of 5" -- el numerador se usa como número de
 # épocas del punto (mismo rol que "N Promedios" de Hi-Target).
 _VALID_READINGS_RE = re.compile(r"^--Valid Readings:\s*(\d+)\s+of\s+(\d+)", re.IGNORECASE)
+
+# Formato alterno "Avg/Min/Max" del bloque de calidad (sin "STATUS:"),
+# una línea por campo -- ver la nota en el docstring del módulo sobre
+# por qué existe (SurPad, lecturas promediadas) y por qué sólo se usa
+# el valor "Avg" de cada una. El "Min"/"Max" que sigue en la misma
+# línea no se captura -- no hace falta, sólo se usa para reconocer la
+# línea (y porque las columnas de POSTPLOT a llenar sólo admiten un
+# único valor por punto, no un rango).
+_SURPAD_HDOP_RE = re.compile(r"^--HDOP\s+Avg:\s*([\d.]+)", re.IGNORECASE)
+_SURPAD_VDOP_RE = re.compile(r"^--VDOP\s+Avg:\s*([\d.]+)", re.IGNORECASE)
+_SURPAD_PDOP_RE = re.compile(r"^--PDOP\s+Avg:\s*([\d.]+)", re.IGNORECASE)
+_SURPAD_NSATS_RE = re.compile(r"^--Number of Satellites\s+Avg:\s*(\d+)", re.IGNORECASE)
 
 # "--DT08-02-2025" / "--TM09:30:53" -- se guardan tal cual, como texto,
 # nunca se interpreta el formato de fecha/hora.
@@ -388,6 +430,30 @@ def _accumulate_quality_line(line: str, point: ChcnavPoint) -> None:
             point.vdop = _parse_float(pares["VDOP"])
         return
 
+    # Formato alterno "Avg/Min/Max" (sin "STATUS:", ver el docstring
+    # del módulo) -- cada campo viene en su propia línea, así que se
+    # revisa una por una; nunca se toca `point.status` aquí (este
+    # formato no trae ese dato).
+    m = _SURPAD_HDOP_RE.match(line)
+    if m:
+        point.hdop = _parse_float(m.group(1))
+        return
+
+    m = _SURPAD_VDOP_RE.match(line)
+    if m:
+        point.vdop = _parse_float(m.group(1))
+        return
+
+    m = _SURPAD_PDOP_RE.match(line)
+    if m:
+        point.pdop = _parse_float(m.group(1))
+        return
+
+    m = _SURPAD_NSATS_RE.match(line)
+    if m:
+        point.n_sats = _parse_int(m.group(1))
+        return
+
     m = _VALID_READINGS_RE.match(line)
     if m:
         point.n_epochs = _parse_int(m.group(1))
@@ -544,16 +610,49 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
     return cf
 
 
-def parse_rw5_file(path: str, encoding: str = "utf-8-sig") -> ChcnavFile:
-    """Lee y parsea un .rw5 de CHCNav/LandStar desde disco. 'utf-8-sig'
-    por defecto descarta un BOM si está presente sin fallar si no lo
-    está; el archivo real analizado es ASCII puro (subconjunto válido
-    de UTF-8), así que esto no debería fallar en la práctica."""
-    with open(path, "r", encoding=encoding, newline="") as f:
-        text = f.read()
+# Orden de codificaciones a probar en `parse_rw5_file` cuando no se pide
+# una explícita -- ver la nota de verificación junto a esa función: el
+# archivo real de CHCNav usado para construir este módulo era ASCII puro
+# (subconjunto válido de UTF-8), pero un archivo real de SurPad
+# (`LASUIZA.rw5`, aportado por el usuario) resultó traer texto de Status
+# en español con tildes ("Autónomo") guardado en Windows-1252/Latin-1 de
+# un solo byte (ej. 'ó' = 0xF3), no en UTF-8 -- "'utf-8' codec can't
+# decode byte 0xf3..." fue el error real que QGIS mostró al intentar
+# importarlo antes de este fix. 'cp1252' se prueba antes que 'latin-1'
+# porque interpreta mejor algunas comillas/guiones "tipográficos" que un
+# editor de Windows podría haber guardado; 'latin-1' nunca falla (mapea
+# cualquier byte 1 a 1) y queda como último recurso para no bloquear la
+# importación por un problema de codificación.
+_ENCODINGS_RW5 = ("utf-8-sig", "cp1252", "latin-1")
+
+
+def parse_rw5_file(path: str, encoding: Optional[str] = None) -> ChcnavFile:
+    """Lee y parsea un .rw5 de CHCNav/LandStar/SurPad desde disco.
+
+    Si `encoding` no se especifica, se prueban en orden las de
+    `_ENCODINGS_RW5` -- 'utf-8-sig' primero (descarta un BOM si está
+    presente, sin fallar si no lo está) y se cae a 'cp1252'/'latin-1'
+    si el archivo no es UTF-8 válido (ver la nota junto a
+    `_ENCODINGS_RW5` sobre por qué hace falta: un .rw5 real de SurPad
+    con texto de Status en español tildado, guardado en Windows-1252).
+    Pasar `encoding` fuerza una codificación específica y desactiva
+    este fallback."""
+    encodings = (encoding,) if encoding else _ENCODINGS_RW5
+    text = None
+    ultimo_error: Optional[UnicodeDecodeError] = None
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, newline="") as f:
+                text = f.read()
+            break
+        except UnicodeDecodeError as e:
+            ultimo_error = e
+            continue
+    if text is None:
+        raise ultimo_error
     if not looks_like_rw5(text):
         raise ValueError(
-            "El archivo no parece un .rw5 de CHCNav/LandStar (no se encontraron "
-            "registros 'JB'/'GPS')."
+            "El archivo no parece un .rw5 de CHCNav/LandStar/SurPad (no se "
+            "encontraron registros 'JB'/'GPS')."
         )
     return parse_rw5_text(text, path=path)
