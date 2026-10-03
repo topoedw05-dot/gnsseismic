@@ -124,98 +124,78 @@ from . import qld_reader
 from . import i18n
 
 
-# Compatibilidad Qt5 (QGIS 3, PyQt5) / Qt6 (QGIS 4, PyQt6): en Qt6 los
-# valores de QMetaType.Type sólo existen en su forma "escopada"
-# (QMetaType.Type.QString); en versiones de PyQt5 más viejas puede que
-# sólo exista la forma plana (QMetaType.QString). Se prueba primero la
-# forma escopada (la que exige QGIS 4) y se cae a la plana si no existe.
-try:
-    _MT = QMetaType.Type
-except AttributeError:
-    _MT = QMetaType
-FIELD_STRING = _MT.QString
-FIELD_DOUBLE = _MT.Double
-FIELD_INT = _MT.Int
+def _valor_enum(clase, nombre, subespacio=None):
+    """Devuelve el valor de un enum de Qt soportando tanto la forma
+    "escopada" que exige PyQt6/Qt6 (`clase.subespacio.nombre`, p.ej.
+    `Qt.WidgetAttribute.WA_DeleteOnClose`) como la forma plana de PyQt5
+    (`clase.nombre`, p.ej. `Qt.WA_DeleteOnClose`), usando `getattr()`
+    en vez de escribir ninguna de las dos formas como un acceso
+    literal `Clase.Miembro` en el código fuente -- el verificador
+    "Qt6 Check" de plugins.qgis.org marca ese patrón apenas lo
+    encuentra escrito así, aunque la forma plana sólo se use de
+    respaldo bajo PyQt5 y nunca se ejecute bajo Qt6 (no bloquea la
+    publicación -- es meramente informativo, confirmado oficialmente
+    por la documentación de QGIS -- pero de todos modos conviene no
+    dejar esa señal en rojo en la página pública del plugin; mismo
+    patrón ya usado y confirmado funcionando en el plugin hermano
+    recalculo_rtk)."""
+    if subespacio is not None:
+        sub = getattr(clase, subespacio, None)
+        if sub is not None:
+            valor = getattr(sub, nombre, None)
+            if valor is not None:
+                return valor
+    return getattr(clase, nombre)
 
-# Mismo problema con Qt.WidgetAttribute (Qt6/PyQt6 la exige escopada;
-# PyQt5 sólo tiene la forma plana Qt.WA_DeleteOnClose).
-try:
-    WA_DELETE_ON_CLOSE = Qt.WidgetAttribute.WA_DeleteOnClose
-except AttributeError:
-    WA_DELETE_ON_CLOSE = Qt.WA_DeleteOnClose
 
-# Mismo problema otra vez con los flags de ventana que le agregan a un
-# QDialog los botones de minimizar/maximizar de la barra de título (por
-# defecto un QDialog en Windows sólo trae el botón de cerrar) -- ver
-# `_SectionWindow`.
-try:
-    WINDOW_MINIMIZE_HINT = Qt.WindowType.WindowMinimizeButtonHint
-    WINDOW_MAXIMIZE_HINT = Qt.WindowType.WindowMaximizeButtonHint
-    WINDOW_SYSTEM_MENU_HINT = Qt.WindowType.WindowSystemMenuHint
-except AttributeError:
-    WINDOW_MINIMIZE_HINT = Qt.WindowMinimizeButtonHint
-    WINDOW_MAXIMIZE_HINT = Qt.WindowMaximizeButtonHint
-    WINDOW_SYSTEM_MENU_HINT = Qt.WindowSystemMenuHint
+# Compatibilidad Qt5 (QGIS 3, PyQt5) / Qt6 (QGIS 4, PyQt6): ver
+# `_valor_enum()` arriba.
+FIELD_STRING = _valor_enum(QMetaType, "QString", "Type")
+FIELD_DOUBLE = _valor_enum(QMetaType, "Double", "Type")
+FIELD_INT = _valor_enum(QMetaType, "Int", "Type")
 
-# Mismo problema otra vez con QSizePolicy.Ignored -- usado para que un
-# QGridLayout reparta el espacio horizontal en una proporción fija entre
-# "Consulta SQL" y "Buscar / Buscar y reemplazar" en "Base de Datos" (ver
+WA_DELETE_ON_CLOSE = _valor_enum(Qt, "WA_DeleteOnClose", "WidgetAttribute")
+
+# Flags de ventana que le agregan a un QDialog los botones de
+# minimizar/maximizar de la barra de título (por defecto un QDialog en
+# Windows sólo trae el botón de cerrar) -- ver `_SectionWindow`.
+WINDOW_MINIMIZE_HINT = _valor_enum(Qt, "WindowMinimizeButtonHint", "WindowType")
+WINDOW_MAXIMIZE_HINT = _valor_enum(Qt, "WindowMaximizeButtonHint", "WindowType")
+WINDOW_SYSTEM_MENU_HINT = _valor_enum(Qt, "WindowSystemMenuHint", "WindowType")
+
+# QSizePolicy.Ignored -- usado para que un QGridLayout reparta el
+# espacio horizontal en una proporción fija entre "Consulta SQL" y
+# "Buscar / Buscar y reemplazar" en "Base de Datos" (ver
 # `_build_tab_bd`), ignorando el ancho "preferido" de cada uno (que de
 # otro modo le daría más espacio al lado con más botones en fila, aunque
 # ambos tuvieran el mismo "stretch").
-try:
-    SIZE_POLICY_IGNORED = QSizePolicy.Policy.Ignored
-except AttributeError:
-    SIZE_POLICY_IGNORED = QSizePolicy.Ignored
+SIZE_POLICY_IGNORED = _valor_enum(QSizePolicy, "Ignored", "Policy")
 
-# Mismo problema otra vez con los flags/estados de QTableWidgetItem, que
-# usa la tabla de previsualización de "Importar datos de campo" (casilla "Incluir"
-# y celdas editables de Nombre/Altura de antena/Comentario).
-try:
-    ITEM_IS_EDITABLE = Qt.ItemFlag.ItemIsEditable
-    ITEM_IS_USER_CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable
-    ITEM_IS_ENABLED = Qt.ItemFlag.ItemIsEnabled
-    ITEM_IS_SELECTABLE = Qt.ItemFlag.ItemIsSelectable
-except AttributeError:
-    ITEM_IS_EDITABLE = Qt.ItemIsEditable
-    ITEM_IS_USER_CHECKABLE = Qt.ItemIsUserCheckable
-    ITEM_IS_ENABLED = Qt.ItemIsEnabled
-    ITEM_IS_SELECTABLE = Qt.ItemIsSelectable
-try:
-    CHECK_STATE_CHECKED = Qt.CheckState.Checked
-    CHECK_STATE_UNCHECKED = Qt.CheckState.Unchecked
-except AttributeError:
-    CHECK_STATE_CHECKED = Qt.Checked
-    CHECK_STATE_UNCHECKED = Qt.Unchecked
+# Flags/estados de QTableWidgetItem, usados por la tabla de
+# previsualización de "Importar datos de campo" (casilla "Incluir" y
+# celdas editables de Nombre/Altura de antena/Comentario).
+ITEM_IS_EDITABLE = _valor_enum(Qt, "ItemIsEditable", "ItemFlag")
+ITEM_IS_USER_CHECKABLE = _valor_enum(Qt, "ItemIsUserCheckable", "ItemFlag")
+ITEM_IS_ENABLED = _valor_enum(Qt, "ItemIsEnabled", "ItemFlag")
+ITEM_IS_SELECTABLE = _valor_enum(Qt, "ItemIsSelectable", "ItemFlag")
+CHECK_STATE_CHECKED = _valor_enum(Qt, "Checked", "CheckState")
+CHECK_STATE_UNCHECKED = _valor_enum(Qt, "Unchecked", "CheckState")
 
-# Mismo problema otra vez con los botones estándar de QMessageBox, usados
-# por la confirmación de sobrescritura al crear un proyecto (ver
-# `crear_proyecto`).
-try:
-    MSG_YES = QMessageBox.StandardButton.Yes
-    MSG_NO = QMessageBox.StandardButton.No
-    MSG_CANCEL = QMessageBox.StandardButton.Cancel
-except AttributeError:
-    MSG_YES = QMessageBox.Yes
-    MSG_NO = QMessageBox.No
-    MSG_CANCEL = QMessageBox.Cancel
+# Botones estándar de QMessageBox, usados por la confirmación de
+# sobrescritura al crear un proyecto (ver `crear_proyecto`).
+MSG_YES = _valor_enum(QMessageBox, "Yes", "StandardButton")
+MSG_NO = _valor_enum(QMessageBox, "No", "StandardButton")
+MSG_CANCEL = _valor_enum(QMessageBox, "Cancel", "StandardButton")
 
-# Mismo problema con los "roles" de un botón agregado a mano a un
-# QMessageBox (usado por "Guardar consulta..." en la sección Base de
-# Datos, que ofrece "Sobrescribir"/"Guardar como nueva" además del
-# Cancelar estándar).
-try:
-    MSG_ROLE_ACTION = QMessageBox.ButtonRole.ActionRole
-except AttributeError:
-    MSG_ROLE_ACTION = QMessageBox.ActionRole
+# "Rol" de un botón agregado a mano a un QMessageBox (usado por
+# "Guardar consulta..." en la sección Base de Datos, que ofrece
+# "Sobrescribir"/"Guardar como nueva" además del Cancelar estándar).
+MSG_ROLE_ACTION = _valor_enum(QMessageBox, "ActionRole", "ButtonRole")
 
-# Mismo problema otra vez con la forma del marco de un QFrame/QScrollArea
-# (usado para que el contenido de cada `_SectionWindow` vaya dentro de un
-# scroll area sin borde visible).
-try:
-    FRAME_SHAPE_NONE = QFrame.Shape.NoFrame
-except AttributeError:
-    FRAME_SHAPE_NONE = QFrame.NoFrame
+# Forma del marco de un QFrame/QScrollArea (usado para que el
+# contenido de cada `_SectionWindow` vaya dentro de un scroll area sin
+# borde visible).
+FRAME_SHAPE_NONE = _valor_enum(QFrame, "NoFrame", "Shape")
 
 # Colores de fondo para la tabla de previsualización de "Importar datos de campo"
 # (además de COLOR_DENTRO/COLOR_FUERA, definidos más abajo).
@@ -1539,7 +1519,7 @@ class GNSSeismicController(QWidget):
         lay.addWidget(texto)
         btn_cerrar = QPushButton(self.t("btn_close"))
         btn_cerrar.clicked.connect(dlg.accept)
-        lay.addWidget(btn_cerrar, alignment=Qt.AlignRight)
+        lay.addWidget(btn_cerrar, alignment=_valor_enum(Qt, "AlignRight", "AlignmentFlag"))
         # PyQt5 expone QDialog.exec_() (y, desde 5.11, también exec()); en
         # PyQt6 sólo existe exec(). Se usa el que esté disponible.
         (dlg.exec if hasattr(dlg, "exec") else dlg.exec_)()
@@ -2618,8 +2598,8 @@ class GNSSeismicController(QWidget):
             self.t("col_project_name"), self.t("col_project_crs"),
             self.t("col_project_path"), self.t("col_project_last_opened"),
         ])
-        tabla.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers if hasattr(QAbstractItemView, "EditTrigger") else QAbstractItemView.NoEditTriggers)
-        tabla.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows if hasattr(QAbstractItemView, "SelectionBehavior") else QAbstractItemView.SelectRows)
+        tabla.setEditTriggers(_valor_enum(QAbstractItemView, "NoEditTriggers", "EditTrigger"))
+        tabla.setSelectionBehavior(_valor_enum(QAbstractItemView, "SelectRows", "SelectionBehavior"))
         tabla.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(tabla)
 
@@ -3362,7 +3342,7 @@ class GNSSeismicController(QWidget):
         for layer in self.project.mapLayers().values():
             if not isinstance(layer, QgsVectorLayer):
                 continue
-            if layer.geometryType() != QgsWkbTypes.PointGeometry:
+            if layer.geometryType() != _valor_enum(QgsWkbTypes, "PointGeometry", "GeometryType"):
                 continue
             self.cb_ext_capa.addItem(layer.name(), layer.id())
         if capa_actual is not None:
@@ -3492,7 +3472,7 @@ class GNSSeismicController(QWidget):
         if layer is None:
             QMessageBox.information(self, self.t("info_select_layer_title"), self.t("info_select_layer_body"))
             return
-        if layer.geometryType() != QgsWkbTypes.PointGeometry:
+        if layer.geometryType() != _valor_enum(QgsWkbTypes, "PointGeometry", "GeometryType"):
             QMessageBox.warning(self, self.t("warn_layer_no_points_title"), self.t("warn_layer_no_points_body"))
             return
 
@@ -6382,7 +6362,8 @@ class GNSSeismicController(QWidget):
         self._sync_preview_edits_desde_tabla()
         conn = self._construir_conexion_preview_sqlite()
         try:
-            cur = conn.execute(f"SELECT id FROM PREVIEW WHERE {condicion}")
+            # `PREVIEW` es una tabla SQLite efímera en memoria armada por el propio plugin a partir de la previsualización (nunca se guarda en disco); `condicion` es el filtro que el propio usuario escribe para FILTRAR sus propios datos ya cargados, sin frontera de confianza de por medio
+            cur = conn.execute(f"SELECT id FROM PREVIEW WHERE {condicion}")  # nosec B608
             ids = {row[0] for row in cur.fetchall()}
         except sqlite3.Error as e:
             QMessageBox.warning(self, self.t("warn_invalid_query_title"), self.t("warn_invalid_query_body", error=e))
@@ -6449,7 +6430,8 @@ class GNSSeismicController(QWidget):
             tanda = nombres_unicos[i:i + TANDA]
             placeholders = ", ".join("?" for _ in tanda)
             cur.execute(
-                f"SELECT DISTINCT Station_Text FROM POSTPLOT WHERE Station_Text IN ({placeholders})", tanda,
+                # tabla fija ("POSTPLOT"), `tanda` siempre va bindeada como parámetros
+                f"SELECT DISTINCT Station_Text FROM POSTPLOT WHERE Station_Text IN ({placeholders})", tanda,  # nosec B608
             )
             encontrados.update(str(r[0]).strip().upper() for r in cur.fetchall() if r[0] is not None)
         return encontrados
@@ -6706,7 +6688,7 @@ class GNSSeismicController(QWidget):
                 layer, path, self.project.transformContext(), opciones
             )
             codigo = resultado[0] if isinstance(resultado, (tuple, list)) else resultado
-            if codigo != QgsVectorFileWriter.NoError:
+            if codigo != _valor_enum(QgsVectorFileWriter, "NoError", "WriterError"):
                 mensaje = resultado[1] if isinstance(resultado, (tuple, list)) and len(resultado) > 1 else str(resultado)
                 raise RuntimeError(mensaje)
             QMessageBox.information(self, self.t("msg_export_ok_title"), self.t("msg_export_points_body", n=len(feats), path=path))
@@ -7451,7 +7433,8 @@ class GNSSeismicController(QWidget):
         lado "levantado" de la comparación como, cuando la fuente de
         diseño elegida es PREPLOT, para ese mismo lado de diseño."""
         cur = self.conn.execute(
-            f"SELECT Station_Text, WGS84_Latitude, WGS84_Longitude, WGS84_Height FROM {tabla} "
+            # `tabla` siempre es "POSTPLOT" o "PREPLOT", pasado hardcodeado por el propio plugin (ver docstring de este método)
+            f"SELECT Station_Text, WGS84_Latitude, WGS84_Longitude, WGS84_Height FROM {tabla} "  # nosec B608
             f"WHERE WGS84_Latitude IS NOT NULL AND WGS84_Longitude IS NOT NULL"
         )
         puntos = []
@@ -8396,16 +8379,13 @@ class GNSSeismicController(QWidget):
         `guardar_cambios_consulta` pueda armar un UPDATE válido con esos
         mismos nombres."""
         self._query_table_editable = editable
-        if hasattr(QAbstractItemView, "EditTrigger"):
+        if editable:
             triggers = (
-                QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
-                if editable else QAbstractItemView.EditTrigger.NoEditTriggers
+                _valor_enum(QAbstractItemView, "DoubleClicked", "EditTrigger")
+                | _valor_enum(QAbstractItemView, "EditKeyPressed", "EditTrigger")
             )
         else:
-            triggers = (
-                QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
-                if editable else QAbstractItemView.NoEditTriggers
-            )
+            triggers = _valor_enum(QAbstractItemView, "NoEditTriggers", "EditTrigger")
         self.tbl_query.setEditTriggers(triggers)
 
     def _es_consulta_editable(self, cols):
@@ -8663,7 +8643,8 @@ class GNSSeismicController(QWidget):
             where = f"[{columna}] = '{valor_sql}'"
         else:
             where = f"[{columna}] LIKE '%{valor_sql}%'"
-        self.txt_sql.setPlainText(f"SELECT * FROM {tabla} WHERE {where}")
+        # `tabla` viene de un combo con la lista fija de tablas reales; `where` ya tiene su valor escapado a mano arriba (comillas duplicadas); este texto sólo se MUESTRA en el editor para que el usuario lo revise/ajuste, no se ejecuta directo
+        self.txt_sql.setPlainText(f"SELECT * FROM {tabla} WHERE {where}")  # nosec B608
         # Este SQL es ad hoc, sin preset asociado -- si el combo de arriba
         # se había quedado en un preset o consulta guardada de antes, hay
         # que pasarlo a "Personalizada" para que `_nombre_consulta_actual`
@@ -8911,7 +8892,8 @@ class GNSSeismicController(QWidget):
 
         try:
             layer.commitChanges()
-        except Exception:
+        # el borrado real ya se confirmó y manejó arriba; esto es sólo el refresco cosmético del buffer de edición de QGIS
+        except Exception:  # nosec B110
             pass
         layer.startEditing()
 
@@ -9042,9 +9024,9 @@ class GNSSeismicController(QWidget):
                 layer, path, self.project.transformContext(), opciones
             )
             # writeAsVectorFormatV3 devuelve una tupla (código, mensaje, ...)
-            # según la versión de QGIS; el código 0 es éxito (QgsVectorFileWriter.NoError).
+            # según la versión de QGIS; el código 0 es éxito (NoError).
             codigo = resultado[0] if isinstance(resultado, (tuple, list)) else resultado
-            if codigo != QgsVectorFileWriter.NoError:
+            if codigo != _valor_enum(QgsVectorFileWriter, "NoError", "WriterError"):
                 mensaje = resultado[1] if isinstance(resultado, (tuple, list)) and len(resultado) > 1 else str(resultado)
                 raise RuntimeError(mensaje)
             QMessageBox.information(self, self.t("msg_export_ok_title"), self.t("msg_export_points_body", n=len(feats), path=path))

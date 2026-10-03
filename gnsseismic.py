@@ -94,7 +94,8 @@ class GNSSeismicPlugin:
         for key, action in self.actions:
             try:
                 self.iface.removePluginMenu(_MENU_NAME, action)
-            except Exception:
+            # limpieza de descarga del plugin: no hay nada que hacer si la acción del menú ya no existe
+            except Exception:  # nosec B110
                 pass
         self.actions = []
         if self.toolbar is not None:

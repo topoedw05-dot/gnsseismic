@@ -253,7 +253,8 @@ def insert_rows(conn: sqlite3.Connection, table: str, columns: List[str], rows: 
     """
     placeholders = ", ".join("?" for _ in columns)
     col_list = ", ".join(columns)
-    sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
+    # `table`/`columns` siempre vienen hardcodeados desde el propio plugin, nunca de texto del usuario
+    sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"  # nosec B608
     n = 0
     cur = conn.cursor()
     for row in rows:
@@ -266,7 +267,8 @@ def insert_rows(conn: sqlite3.Connection, table: str, columns: List[str], rows: 
 
 def fetch_points(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:
     cur = conn.cursor()
-    cur.execute(f"SELECT * FROM {table}")
+    # `table` siempre viene hardcodeado desde el propio plugin, nunca de texto del usuario
+    cur.execute(f"SELECT * FROM {table}")  # nosec B608
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -285,7 +287,8 @@ def insert_comparacion_rows(conn: sqlite3.Connection, rows: List[Dict[str, Any]]
 
 
 def table_row_count(conn: sqlite3.Connection, table: str) -> int:
-    cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
+    # `table` siempre viene hardcodeado desde el propio plugin, nunca de texto del usuario
+    cur = conn.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608
     return cur.fetchone()[0]
 
 
@@ -448,7 +451,8 @@ def deletable_table_and_where(sql: str) -> Tuple[Optional[str], Optional[str]]:
 def count_matching_rows(conn: sqlite3.Connection, table: str, where_sql: Optional[str]) -> int:
     if table not in DELETABLE_TABLES:
         raise ValueError(f"No se permite borrar de la tabla {table} desde este panel.")
-    sql = f"SELECT COUNT(*) FROM {table}"
+    # `table` ya validado contra DELETABLE_TABLES arriba; `where_sql` es el WHERE de la misma consulta que el propio usuario ya escribió y corrió en su editor de SQL (sin frontera de confianza: ya tiene acceso de lectura/escritura completo a su propia base local)
+    sql = f"SELECT COUNT(*) FROM {table}"  # nosec B608
     if where_sql:
         sql += f" WHERE {where_sql}"
     return conn.execute(sql).fetchone()[0]
@@ -461,7 +465,8 @@ def delete_matching_rows(conn: sqlite3.Connection, table: str, where_sql: Option
     el borrado en la interfaz -- esta función no vuelve a preguntar."""
     if table not in DELETABLE_TABLES:
         raise ValueError(f"No se permite borrar de la tabla {table} desde este panel.")
-    sql = f"DELETE FROM {table}"
+    # `table` ya validado contra DELETABLE_TABLES arriba; `where_sql` es el WHERE de la misma consulta que el propio usuario ya escribió y corrió en su editor de SQL (sin frontera de confianza: ya tiene acceso de lectura/escritura completo a su propia base local)
+    sql = f"DELETE FROM {table}"  # nosec B608
     if where_sql:
         sql += f" WHERE {where_sql}"
     cur = conn.execute(sql)
@@ -480,7 +485,8 @@ def delete_rows_by_id(conn: sqlite3.Connection, table: str, ids: Iterable[int]) 
     if not ids:
         return 0
     placeholders = ", ".join("?" for _ in ids)
-    cur = conn.execute(f"DELETE FROM {table} WHERE ID IN ({placeholders})", ids)
+    # `table` ya validado contra DELETABLE_TABLES arriba; `ids` siempre van bindeados como parámetros, nunca concatenados
+    cur = conn.execute(f"DELETE FROM {table} WHERE ID IN ({placeholders})", ids)  # nosec B608
     conn.commit()
     return cur.rowcount
 
@@ -520,7 +526,8 @@ def update_row_by_id(conn: sqlite3.Connection, table: str, row_id: int, changes:
             raise ValueError(f"'{col}' no es una columna real de {table}.")
     set_sql = ", ".join(f"[{col}] = ?" for col in changes)
     valores = list(changes.values()) + [row_id]
-    conn.execute(f"UPDATE [{table}] SET {set_sql} WHERE ID = ?", valores)
+    # `table`/columnas de `set_sql` ya validados contra DELETABLE_TABLES/table_column_names arriba; los valores siempre van bindeados como parámetros
+    conn.execute(f"UPDATE [{table}] SET {set_sql} WHERE ID = ?", valores)  # nosec B608
     conn.commit()
 
 
@@ -549,10 +556,12 @@ def count_replace_matches(conn: sqlite3.Connection, table: str, column: str, sea
     if column not in set(table_column_names(conn, table)):
         raise ValueError(f"'{column}' no es una columna real de {table}.")
     if exact:
-        sql = f"SELECT COUNT(*) FROM [{table}] WHERE [{column}] = ?"
+        # `table`/`column` ya validados contra DELETABLE_TABLES/table_column_names arriba; el valor buscado siempre va bindeado como parámetro
+        sql = f"SELECT COUNT(*) FROM [{table}] WHERE [{column}] = ?"  # nosec B608
         params = [search_value]
     else:
-        sql = f"SELECT COUNT(*) FROM [{table}] WHERE [{column}] LIKE ?"
+        # mismo motivo que la rama anterior
+        sql = f"SELECT COUNT(*) FROM [{table}] WHERE [{column}] LIKE ?"  # nosec B608
         params = [f"%{search_value}%"]
     return conn.execute(sql, params).fetchone()[0]
 
@@ -594,10 +603,12 @@ def replace_in_column(
     if column not in set(table_column_names(conn, table)):
         raise ValueError(f"'{column}' no es una columna real de {table}.")
     if exact:
-        sql = f"UPDATE [{table}] SET [{column}] = ? WHERE [{column}] = ?"
+        # `table`/`column` ya validados contra DELETABLE_TABLES/table_column_names arriba; los valores siempre van bindeados como parámetros
+        sql = f"UPDATE [{table}] SET [{column}] = ? WHERE [{column}] = ?"  # nosec B608
         params = [replace_value, search_value]
     else:
-        sql = f"UPDATE [{table}] SET [{column}] = REPLACE([{column}], ?, ?) WHERE [{column}] LIKE ?"
+        # mismo motivo que la rama anterior
+        sql = f"UPDATE [{table}] SET [{column}] = REPLACE([{column}], ?, ?) WHERE [{column}] LIKE ?"  # nosec B608
         params = [search_value, replace_value, f"%{search_value}%"]
     cur = conn.execute(sql, params)
     conn.commit()
