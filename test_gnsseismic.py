@@ -29,6 +29,7 @@ import ggf_reader
 import hitarget_parser
 import hitarget_raw_parser
 import chcnav_parser
+import surpad_parser
 import stonex_parser
 import i18n
 import qld_reader
@@ -2507,6 +2508,171 @@ class TestChcnavParser(unittest.TestCase):
         self.assertTrue(all(p.base_station_name == "BASE4" for p in gps_points))
         self.assertTrue(all(p.base_baseline_m is not None and p.base_baseline_m > 0 for p in gps_points))
         self.assertTrue(all(p.base_baseline_m is None for p in base_points))
+
+
+_SURPAD_RW5_MINI = """\
+JB,NMLASUIZA,DT09-02-2026,TM10:15:18
+MO,AD0,UN1,SF1.000000,EC0,EO0.0,AU0
+--SurPad Version 4.2.230713.165244
+--Base Configuration by Reading GPS Position
+BP,PN1,LA4.53305676,LN-74.18440211,ET2763.6460,AG2.2730,PA2.2982,ATAPC,SRBASE,--
+--GS,PN1,N 2098681.9520,E 4854555.8060,EL2763.6460,--Base
+LS,HR1.8249
+GPS,PN1,LA4.53297279,LN-74.18444174,EL2766.946500,--TN
+--GS,PN1,N 2098656.1966,E 4854543.5510,EL2765.1216,--TN
+--Valid Readings: 2 of 2
+--PDOP Avg: 1.2000 Min: 1.2000 Max: 1.2000
+LS,HR1.8249
+GPS,PN2,LA4.53366559,LN-74.18421981,EL2765.2846,--TN
+--GS,PN2,N 2098657.8020,E 4854545.3612,EL2765.2846,--TN
+LS,HR1.8249
+GPS,PN3,LA4.53298825,LN-74.18442695,EL2799.0000,--TN
+--GS,PN3,N 2098660.9338,E 4854548.1169,EL2764.9216,--TN
+BP,PN1,LA4.53305676,LN-74.18440211,EL2763.6460,AG2.2730,PA2.2982,ATAPC,SRBASE,--
+--GS,PN1,N 2098681.9520,E 4854555.8060,EL2763.6460,--Base
+BP,PN1,LA4.53305829,LN-74.18440233,EL2763.9951,AG2.2550,PA2.2802,ATAPC,SRBASE,--
+--GS,PN1,N 2098682.0,E 4854555.9,EL2763.9951,--Base
+"""
+
+_SURPAD_RAW_MINI = """\
+--SurPad 4.2.230713.165244
+JB,NMLASUIZA,DT02-09-2026,TM10:15:18
+--Gnss Device: Model=E300 Pro,Serial=E31P3A2200400, FirmwareVer=0.24.220812
+BP,PNSBT-1,LA4.89182433,LN-74.31222808,HT2763.6460,--DataLink=Radio interno
+GS,PNSBT-1,N 2098681.9520,E 4854555.8060,EL2763.6460,--
+--GNSS Statistics RT: Obs=2,Solution=RTK FIXED,PDOPMax=1.200,SVMin=11,StdDevH=0.020m
+AH,DC2,MA1.800,ME0,RA1.825
+EP,TM10:39:24.000,LA4.8915910866,LN-74.3123381783,HT2765.1216,RH0.0198,RN0.0055,RE0.0085,RV0.0285,DH1.2000,DV1.0000,GM4,CL1
+HCDP,DOP 1.2000,DIF 4
+HCRV,HCTM2026Y09M02D10H39M21S---2026Y09M02D10H39M24S,RVWB4.8915910866,RVWL-74.3123381783,RVWH2765.1216,DRTM4,EPCH2,NGPS0,NGNS0,NALL12
+BL,DCROVER,PN1,DX-10.7689,DY-6.8372,DZ-25.5846,--RS,GM4,CL1,HP1.2000,VP1.0000
+GS,PN1,N 2098656.1966,E 4854543.5510,EL2765.1216,--TN
+AP,PN1,N 2098656.1966,E 4854543.5510,EL2765.1216,--TN
+"""
+
+
+class TestSurpadParsers(unittest.TestCase):
+    """v2.62.8: el .rw5 de SurPad trae LA/LN en DD.MMSSssss (no decimal) y
+    se agrega el lector del .raw de SurPad (surpad_parser.py)."""
+
+    def test_dms_compacto_user_example(self):
+        # Ejemplo real del usuario: LA4.53366559 = 4°53'36.6559",
+        # LN-74.18421981 = -74°18'42.1981".
+        lat = chcnav_parser.dms_compacto_a_decimal("4.53366559")
+        lon = chcnav_parser.dms_compacto_a_decimal("-74.18421981")
+        self.assertAlmostEqual(lat, 4 + 53 / 60 + 36.6559 / 3600, places=12)
+        self.assertAlmostEqual(lon, -(74 + 18 / 60 + 42.1981 / 3600), places=12)
+
+    def test_dms_compacto_rejects_decimal_degrees(self):
+        # 4.89182433 tiene "89" minutos: no es DD.MMSSssss.
+        self.assertIsNone(chcnav_parser.dms_compacto_a_decimal("4.89182433"))
+        self.assertIsNone(chcnav_parser.dms_compacto_a_decimal("abc"))
+        self.assertIsNone(chcnav_parser.dms_compacto_a_decimal(None))
+
+    def test_detect_dialect(self):
+        self.assertEqual(chcnav_parser.detect_rw5_dialect(_SURPAD_RW5_MINI), "surpad")
+        self.assertEqual(chcnav_parser.detect_rw5_dialect("JB,NM1\nGPS,PN1,LA10.1,LN-75.3,EL5.0,--LD\n"), "chcnav")
+
+    def test_chcnav_dialect_still_decimal(self):
+        cf = chcnav_parser.parse_rw5_text("JB,NM1\nGPS,PN1,LA10.162030337814702,LN-75.32709828115034,EL13.5,--LD\n")
+        self.assertEqual(cf.dialect, "chcnav")
+        self.assertAlmostEqual(cf.points[0].lat, 10.162030337814702, places=12)
+
+    def test_surpad_rw5_converts_dms_and_uses_gs_height(self):
+        cf = chcnav_parser.parse_rw5_text(_SURPAD_RW5_MINI)
+        self.assertEqual(cf.dialect, "surpad")
+        self.assertEqual(cf.coord_format, "dms")
+        pts = {p.name: p for p in cf.points if not p.is_base}
+        self.assertAlmostEqual(pts["2"].lat, 4 + 53 / 60 + 36.6559 / 3600, places=9)
+        self.assertAlmostEqual(pts["2"].lon, -(74 + 18 / 60 + 42.1981 / 3600), places=9)
+        # EL del GPS = suelo + HR (2766.9465): se usa la altura del suelo del --GS.
+        self.assertAlmostEqual(pts["1"].height, 2765.1216, places=4)
+        self.assertFalse(pts["1"].tilt_sospechoso)
+        self.assertFalse(pts["2"].tilt_sospechoso)
+        # PN3: EL no coincide ni con el suelo ni con suelo+HR -> sospechoso.
+        self.assertTrue(pts["3"].tilt_sospechoso)
+        self.assertTrue(any("inclinación" in w for w in cf.warnings))
+
+    def test_surpad_rw5_base_et_height_and_unique_names(self):
+        cf = chcnav_parser.parse_rw5_text(_SURPAD_RW5_MINI)
+        bases = [p for p in cf.points if p.is_base]
+        # 3 re-ocupaciones PN1: la 2da idéntica a la 1ra se colapsa, la 3ra se renombra.
+        self.assertEqual([b.name for b in bases], ["1", "1 (2)"])
+        self.assertAlmostEqual(bases[0].height, 2763.646, places=4)  # 'ET' aceptado
+        for p in cf.points:
+            if not p.is_base:
+                self.assertEqual(p.base_station_name, "1")
+                self.assertGreater(p.base_baseline_m, 0)
+
+    def test_surpad_raw_parser(self):
+        cf = surpad_parser.parse_surpad_raw_text(_SURPAD_RAW_MINI)
+        self.assertEqual(cf.dialect, "surpad_raw")
+        pts = [p for p in cf.points if not p.is_base]
+        self.assertEqual(len(pts), 1)  # el 'AP' y el 'GS' de la base no cuentan
+        p = pts[0]
+        self.assertEqual(p.name, "1")
+        self.assertEqual(p.tipo, "TN")
+        self.assertAlmostEqual(p.lat, 4.8915910866, places=10)
+        self.assertAlmostEqual(p.lon, -74.3123381783, places=10)
+        self.assertAlmostEqual(p.height, 2765.1216, places=4)
+        self.assertEqual(p.status, "FIXED")
+        self.assertEqual(p.n_sats, 11)  # SVMin
+        self.assertEqual(p.n_epochs, 2)
+        self.assertAlmostEqual(p.pdop, 1.2)
+        self.assertAlmostEqual(p.vdop, 1.0)
+        self.assertIsNone(p.hdop)
+        self.assertAlmostEqual(p.ant_height, 1.825)
+        self.assertEqual(p.date_text, "09-02-2026")
+        self.assertEqual(p.time_text, "10:39:24")
+        self.assertEqual(p.receiver_type, "E300 Pro")
+        self.assertEqual(p.receiver_sn, "E31P3A2200400")
+        self.assertEqual(p.base_station_name, "SBT-1")
+        b = [q for q in cf.points if q.is_base][0]
+        self.assertAlmostEqual(b.lat, 4.89182433, places=8)
+        self.assertAlmostEqual(b.height, 2763.646, places=3)
+
+    def test_surpad_dispatcher_by_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw = os.path.join(d, "a.raw")
+            rw5 = os.path.join(d, "b.rw5")
+            junk = os.path.join(d, "c.txt")
+            with open(raw, "w", encoding="cp1252", newline="") as f:
+                f.write(_SURPAD_RAW_MINI)
+            with open(rw5, "w", encoding="cp1252", newline="") as f:
+                f.write(_SURPAD_RW5_MINI)
+            with open(junk, "w") as f:
+                f.write("hola\n")
+            self.assertEqual(surpad_parser.parse_surpad_file(raw).dialect, "surpad_raw")
+            self.assertEqual(surpad_parser.parse_surpad_file(rw5).dialect, "surpad")
+            with self.assertRaises(ValueError):
+                surpad_parser.parse_surpad_file(junk)
+
+    _REAL_DIR = "/mnt/user-data/uploads/Plugin_Topografia/Pruebas/colectoras/LASUIZA/LASUIZA/Data"
+
+    def test_real_lasuiza_files_agree_with_grid(self):
+        import glob
+        rw5 = os.path.join(self._REAL_DIR, "LASUIZA.rw5")
+        raw = os.path.join(self._REAL_DIR, "LASUIZA.raw")
+        if not os.path.exists(raw):
+            # El .raw llegó como adjunto suelto en la sesión de desarrollo.
+            cand = glob.glob("/root/.claude/uploads/*/*-LASUIZA.raw")
+            raw = cand[0] if cand else raw
+        if not (os.path.exists(rw5) and os.path.exists(raw)):
+            self.skipTest("archivos reales de LASUIZA no disponibles")
+        a = surpad_parser.parse_surpad_file(rw5)
+        b = surpad_parser.parse_surpad_file(raw)
+        pa = {(p.name, p.time_text): p for p in a.points if not p.is_base}
+        pb = {(p.name, p.time_text): p for p in b.points if not p.is_base}
+        comunes = set(pa) & set(pb)
+        self.assertGreater(len(comunes), 1200)
+        lejos = [k for k in comunes if chcnav_parser._haversine_m(
+            pa[k].lat, pa[k].lon, pb[k].lat, pb[k].lon) > 0.005]
+        # Sólo los puntos con compensación de inclinación (~25) se alejan.
+        self.assertLessEqual(len(lejos), 30)
+        marcados = [k for k in lejos if pa[k].tilt_sospechoso]
+        self.assertGreaterEqual(len(marcados), 20)
+        for k in comunes:
+            self.assertAlmostEqual(pa[k].height, pb[k].height, places=3)
 
 
 class TestI18n(unittest.TestCase):

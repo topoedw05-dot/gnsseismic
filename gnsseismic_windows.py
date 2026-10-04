@@ -114,6 +114,7 @@ from .dc_parser import (
 from . import hitarget_parser
 from . import hitarget_raw_parser
 from . import chcnav_parser
+from . import surpad_parser
 from . import stonex_parser
 from . import csv_matcher
 from . import preplot_generator
@@ -4198,27 +4199,24 @@ class GNSSeismicController(QWidget):
 
     def agregar_surpad(self):
         # SurPad (app de campo usada con equipos de varias marcas, no
-        # un fabricante propio de receptor) exporta un .rw5 de la misma
-        # familia de formato que LandStar/CHCNav -- mismos códigos de
-        # registro JB/MO/BP/LS/GPS de 2 letras pegadas a su valor --
-        # verificado contra un archivo real del usuario (`LASUIZA.rw5`,
-        # 1239 puntos): se parsea sin cambios con `chcnav_parser.py`
-        # (ver la nota del formato alterno "Avg/Min/Max" del bloque de
-        # calidad en su docstring, agregada en esta misma ronda para
-        # que los puntos con lecturas promediadas también completen
-        # SATS/PDOP/HDOP/VDOP). Se guarda en `self.surpad_files` (no en
-        # `self.chcnav_files`) para que el usuario vea un ítem
-        # "SurPad" distinto en la lista, aunque el objeto en memoria
-        # sea el mismo `chcnav_parser.ChcnavFile`/`ChcnavPoint` -- el
-        # resto del código (preview, subida a POSTPLOT, tipo-code,
-        # modo de levantamiento) los trata igual que a CHCNav por
-        # duck-typing, sin necesitar un parser ni un dataclass propios.
+        # un fabricante propio de receptor) exporta dos formatos que
+        # `surpad_parser.parse_surpad_file` distingue por contenido:
+        #  * .rw5 -- misma familia que LandStar/CHCNav, pero con LA/LN en
+        #    DD.MMSSssss (NO decimales, ver chcnav_parser.py: dialecto
+        #    "surpad", corregido en la v2.62.8 tras verificarlo contra la
+        #    grilla del propio archivo);
+        #  * .raw -- grados decimales completos, la fuente más fiable.
+        # Ambos devuelven `chcnav_parser.ChcnavFile`/`ChcnavPoint`, así que
+        # se guardan en `self.surpad_files` (ítem "SurPad" propio en la
+        # lista) y el resto del código (preview, subida a POSTPLOT, tipo-
+        # code, modo de levantamiento, corrección de base) los trata igual
+        # que a CHCNav por duck-typing.
         paths, _ = QFileDialog.getOpenFileNames(self, self.t("dlg_add_surpad_title"), "", self.t("filter_surpad_rw5"))
         if not paths:
             return
         for p in paths:
             try:
-                cf = chcnav_parser.parse_rw5_file(p)
+                cf = surpad_parser.parse_surpad_file(p)
             except Exception as e:
                 QMessageBox.warning(self, self.t("warn_read_file_title"), f"{os.path.basename(p)}:\n{e}")
                 continue
@@ -4233,6 +4231,10 @@ class GNSSeismicController(QWidget):
             self.lst_dc.addItem(resumen)
             if cf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(cf.warnings)))
+                # En SurPad el detalle importa (puntos con posible
+                # inclinación, bases renombradas): se muestra cada aviso.
+                for aviso in cf.warnings:
+                    self.log_importar.appendPlainText(f"    - {aviso}")
 
     def agregar_stonex(self):
         # El archivo de Stonex es una base de datos SQLite. Hasta la
@@ -4864,6 +4866,10 @@ class GNSSeismicController(QWidget):
                     "origen": "SURPAD", "dc_idx": sp_idx, "point_idx": point_idx, "line_no": p.line_no,
                     "archivo": os.path.basename(cf.path), "archivo_path": cf.path,
                     "job_name": None, "instrument": "SurPad",
+                    # Sólo el .raw de SurPad trae modelo/serie del receptor
+                    # (comentario "--Gnss Device"); en un .rw5 quedan en None.
+                    "receiver_type": getattr(p, "receiver_type", None),
+                    "receiver_sn": getattr(p, "receiver_sn", None),
                     "tipo": _chcnav_tipo_code(p),
                     # Mismo criterio que CHCNAV arriba: se muestra el
                     # STATUS tal cual (ej. "FIJO"), sin traducirlo --

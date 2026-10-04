@@ -175,6 +175,41 @@ Formato del archivo (texto, delimitado por comas):
     hasta que cambie", igual que el registro '57KI' de un .dc de
     Trimble, y no un dato ligado a un único punto.
 
+    Dialecto SurPad (v2.62.8) -- CORRECCIÓN IMPORTANTE, VERIFICADA con
+    pyproj contra la grilla del propio archivo: un .rw5 de SurPad
+    escribe LA/LN en la convención de Carlson RW5, "DD.MMSSssss" (grados
+    + minutos + segundos pegados, NO grados decimales): "LA4.53366559"
+    es 4°53'36.6559" (= 4.89350 grados decimales), no 4.53366559°.
+    Interpretarlo como decimal (lo que hacía la v2.62.5-2.62.7, por
+    asumir sin comprobar que SurPad == CHCNav) ubica los puntos hasta
+    ~40 km de su lugar real. Contrastando `LASUIZA.rw5` (1232 puntos)
+    con los N/E de su propio comentario "--GS": con DMS, 1207 de 1232
+    puntos coinciden a < 2 mm (los demás, ver "tilt" más abajo); como
+    decimales, no coincide ninguno. El mismo archivo traía como
+    encabezado de comentario "--SurPad Version ..." (el .raw trae
+    "--SurPad 4.2...") -- ese comentario es lo que se usa para detectar
+    el dialecto automáticamente (`detect_rw5_dialect`); un .rw5 de
+    CHCNav/LandStar nunca lo trae y sigue leyéndose en decimal sin
+    ningún cambio. Otras diferencias del dialecto SurPad:
+
+      * El primer 'BP' trae la altura como 'ET' en vez de 'EL' -- se
+        acepta ambas para la base.
+      * La altura 'EL' del registro GPS es inconsistente (a veces la
+        altura del suelo, a veces ésa más 'HR' -- la altura de la
+        antena); en cambio el comentario "--GS,PNx,N..,E..,EL.." justo
+        después SIEMPRE trae la altura del suelo (igual al 'HT' del
+        .raw en los 1230 puntos), así que en este dialecto se usa esa.
+      * 25 de los 1232 puntos del archivo de referencia (compensación
+        de inclinación del jalón activada) traen en el .rw5 una
+        latitud/longitud que difiere hasta ~2 m de la del .raw/--GS; se
+        reconocen porque su 'EL' no coincide ni con la altura del suelo
+        ni con ella + 'HR', y se avisa con una advertencia (el .raw sí
+        trae la posición correcta de esos puntos: preferirlo).
+      * Los nombres de base se repiten ("PN1" 6 veces): las
+        re-ocupaciones idénticas (misma posición) se colapsan en una y
+        las distintas se renombran "PN1 (2)", "PN1 (3)", ... para que
+        la corrección de base RTK pueda distinguirlas.
+
 Este módulo no depende de QGIS ni de PyQt: es lógica pura, igual que
 `dc_parser.py`/`hitarget_parser.py`, para poder probarlo de forma
 aislada.
@@ -230,6 +265,13 @@ _SURPAD_NSATS_RE = re.compile(r"^--Number of Satellites\s+Avg:\s*(\d+)", re.IGNO
 # nunca se interpreta el formato de fecha/hora.
 _DT_RE = re.compile(r"^--DT(.+)$")
 _TM_RE = re.compile(r"^--TM(.+)$")
+
+# "--GS,PN1,N 2098656.1966,E 4854543.5510,EL2765.1216,--TN" -- sólo se
+# toma la altura (EL) del suelo, y sólo en el dialecto SurPad (ver el
+# docstring del módulo); N/E siguen ignorándose.
+_GS_COMMENT_RE = re.compile(
+    r"^--GS,[^,]*,N\s*-?[\d.]+,E\s*-?[\d.]+,EL\s*(-?[\d.]+)", re.IGNORECASE
+)
 
 # Registros que se excluyen del import (silenciosamente, ver el
 # docstring del módulo) además de GPS (importado), SP (excluido con
@@ -294,6 +336,17 @@ class ChcnavPoint:
     is_base: bool = False
     base_baseline_m: Optional[float] = None
     base_station_name: Optional[str] = None
+    # -- Agregado en la v2.62.8 (dialecto SurPad / .raw de SurPad). Todos
+    # opcionales: un .rw5 de CHCNav nunca los llena.
+    receiver_type: Optional[str] = None  # ej. "E300 Pro" (sólo el .raw lo trae)
+    receiver_sn: Optional[str] = None
+    # True si el .rw5 de SurPad trae para este punto una posición
+    # sospechosa (compensación de inclinación, ver el docstring del
+    # módulo) -- el valor sigue en lat/lon tal cual viene, sólo se avisa.
+    tilt_sospechoso: bool = False
+    # Altura del suelo según el comentario "--GS" (dialecto SurPad), uso
+    # interno del parser -- no se muestra.
+    _gs_height: Optional[float] = None
 
 
 @dataclass
@@ -303,6 +356,14 @@ class ChcnavFile:
     warnings: List[str] = field(default_factory=list)
     localization_file: Optional[str] = None  # None si el archivo declara "None" (sin calibración)
     grid_adjustment: Optional[str] = None
+    # "chcnav" (LandStar, grados decimales) o "surpad" (DD.MMSSssss) --
+    # ver `detect_rw5_dialect`; "surpad_raw" lo pone `surpad_parser` para
+    # el formato .raw (grados decimales completos).
+    dialect: str = "chcnav"
+    # "dms" (DD.MMSSssss, convertido a decimal por el parser) o "decimal".
+    coord_format: str = "decimal"
+    receiver_type: Optional[str] = None
+    receiver_sn: Optional[str] = None
 
     @property
     def n_points(self) -> int:
@@ -313,6 +374,65 @@ class ChcnavFile:
         for p in self.points:
             counts[p.name] = counts.get(p.name, 0) + 1
         return {k: v for k, v in counts.items() if v > 1}
+
+
+DIALECT_CHCNAV = "chcnav"
+DIALECT_SURPAD = "surpad"
+
+_SURPAD_HEADER_RE = re.compile(r"^--SurPad\b", re.IGNORECASE | re.MULTILINE)
+
+
+def detect_rw5_dialect(text: str) -> str:
+    """"surpad" si `text` trae el comentario "--SurPad ..." del
+    encabezado de la app SurPad; "chcnav" en cualquier otro caso (el
+    dialecto original de este módulo, sin cambios)."""
+    if text and _SURPAD_HEADER_RE.search(text):
+        return DIALECT_SURPAD
+    return DIALECT_CHCNAV
+
+
+_DMS_COMPACTO_RE = re.compile(r"^([+-]?)(\d+)(?:\.(\d*))?$")
+
+
+def dms_compacto_a_decimal(texto: Optional[str]) -> Optional[float]:
+    """Convierte el formato compacto "DD.MMSSssss" (Carlson RW5/SurPad)
+    a grados decimales con signo: "4.53366559" -> 4 + 53/60 +
+    36.6559/3600 = 4.893515..., "-74.18421981" -> -74.311717...
+    Se trabaja sobre el TEXTO (no sobre un float) para no perder dígitos
+    de los segundos. Devuelve None si no es un número simple o si los
+    minutos/segundos no son < 60 (señal de que el valor NO está en este
+    formato)."""
+    if texto is None:
+        return None
+    m = _DMS_COMPACTO_RE.match(texto.strip())
+    if not m:
+        return None
+    signo = -1.0 if m.group(1) == "-" else 1.0
+    grados = int(m.group(2))
+    frac = (m.group(3) or "").ljust(4, "0")
+    minutos = int(frac[:2])
+    segundos = float(frac[2:4] + "." + (frac[4:] or "0"))
+    if minutos >= 60 or segundos >= 60.0:
+        return None
+    return signo * (grados + minutos / 60.0 + segundos / 3600.0)
+
+
+_LA_LN_RE = re.compile(r",(?:LA|LN)(-?[\d.]+)")
+
+
+def _rw5_coords_son_dms(text: str) -> bool:
+    """True si TODOS los LA/LN del texto son válidos como DD.MMSSssss
+    (minutos y segundos < 60). Con grados decimales de 8 dígitos esto
+    falla casi seguro en cuanto hay unos cuantos puntos (cada valor
+    tiene ~64 % de probabilidad de tener minutos >= 60 o segundos >=
+    60), así que sirve como prueba a nivel de archivo para no
+    convertir por error un .rw5 de SurPad exportado en decimal."""
+    n = 0
+    for m in _LA_LN_RE.finditer(text):
+        n += 1
+        if dms_compacto_a_decimal(m.group(1)) is None:
+            return False
+    return n > 0
 
 
 def looks_like_rw5(text: str) -> bool:
@@ -474,11 +594,111 @@ def _accumulate_quality_line(line: str, point: ChcnavPoint) -> None:
     # propósito.
 
 
-def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
-    cf = ChcnavFile(path=path)
+def _aplicar_altura_gs(cf: ChcnavFile) -> None:
+    """Dialecto SurPad: reemplaza la altura de cada punto por la del
+    comentario "--GS" (altura del suelo, ver el docstring del módulo) y
+    marca como `tilt_sospechoso` los puntos GPS cuyo 'EL' no coincide
+    ni con ella ni con ella + 'HR'."""
+    sospechosos: List[str] = []
+    for p in cf.points:
+        gs = p._gs_height
+        if gs is None:
+            continue
+        if not p.is_base:
+            d = p.height - gs
+            ok = abs(d) < 0.002 or (p.ant_height is not None and abs(d - p.ant_height) < 0.003)
+            if not ok:
+                p.tilt_sospechoso = True
+                sospechosos.append(p.name)
+        p.height = gs
+    if sospechosos:
+        ejemplos = ", ".join(sospechosos[:5])
+        cf.warnings.append(
+            f"{len(sospechosos)} punto(s) con posible compensación de inclinación (ej: {ejemplos}): "
+            "en este .rw5 de SurPad su latitud/longitud puede diferir hasta ~2 m de la real -- "
+            "si existe el .raw del mismo trabajo, impórtelo en su lugar (trae la posición correcta)."
+        )
+
+
+def asignar_bases_vigentes(cf: ChcnavFile, colapsar_bases_repetidas: bool = False) -> None:
+    """Pasada final sobre `cf.points` (en orden de archivo): a cada punto
+    NO-base le asigna `base_station_name`/`base_baseline_m` según la
+    ocupación de base ('BP') más reciente antes de él (ver el docstring
+    del módulo). Con `colapsar_bases_repetidas` (dialecto SurPad / .raw)
+    además: una ocupación de base con el mismo nombre Y la misma posición
+    que otra anterior se descarta (la vigente pasa a ser la primera), y
+    una con el mismo nombre pero otra posición se renombra "nombre (2)",
+    "nombre (3)", ... -- los nombres de base de SurPad se repiten, y la
+    corrección de base RTK identifica la base por su nombre."""
+    nuevos: List[ChcnavPoint] = []
+    vistas: Dict[str, List[ChcnavPoint]] = {}
+    n_colapsadas = 0
+    n_renombradas = 0
+    current_base: Optional[ChcnavPoint] = None
+    for p in cf.points:
+        if p.is_base:
+            if colapsar_bases_repetidas:
+                nombre_orig = p.name
+                previas = vistas.get(nombre_orig, [])
+                igual = None
+                for q in previas:
+                    if (abs(q.lat - p.lat) < 1e-8 and abs(q.lon - p.lon) < 1e-8
+                            and abs(q.height - p.height) < 0.0005):
+                        igual = q
+                        break
+                if igual is not None:
+                    n_colapsadas += 1
+                    current_base = igual
+                    continue
+                if previas:
+                    p.name = f"{nombre_orig} ({len(previas) + 1})"
+                    n_renombradas += 1
+                vistas.setdefault(nombre_orig, []).append(p)
+            current_base = p
+            nuevos.append(p)
+            continue
+        if current_base is not None:
+            dist = _haversine_m(p.lat, p.lon, current_base.lat, current_base.lon)
+            p.base_baseline_m = math.hypot(dist, p.height - current_base.height)
+            p.base_station_name = current_base.name
+        else:
+            p.base_baseline_m = None
+            p.base_station_name = None
+        nuevos.append(p)
+    cf.points = nuevos
+    if n_colapsadas or n_renombradas:
+        cf.warnings.append(
+            f"Bases: {n_colapsadas} re-ocupación(es) idéntica(s) colapsada(s) y "
+            f"{n_renombradas} base(s) con nombre repetido renombrada(s) (ej. 'PN1 (2)')."
+        )
+
+
+def parse_rw5_text(text: str, path: str = "", dialect: Optional[str] = None) -> ChcnavFile:
+    """Parsea el texto de un .rw5. `dialect`: "chcnav" (LA/LN decimales) o
+    "surpad" (LA/LN en DD.MMSSssss, ver el docstring del módulo); si es
+    None se detecta con `detect_rw5_dialect`."""
+    dialect = dialect or detect_rw5_dialect(text)
+    cf = ChcnavFile(path=path, dialect=dialect)
+    es_surpad = dialect == DIALECT_SURPAD
+    usar_dms = False
+    if es_surpad:
+        usar_dms = _rw5_coords_son_dms(text)
+        if usar_dms:
+            cf.coord_format = "dms"
+        else:
+            cf.warnings.append(
+                "Archivo SurPad con LA/LN que no son válidos como DD.MMSSssss: se interpretan como grados decimales."
+            )
+
+    def _coord(txt: Optional[str]) -> Optional[float]:
+        return dms_compacto_a_decimal(txt) if usar_dms else _parse_float(txt)
+
     lines = text.splitlines()
 
     current_point: Optional[ChcnavPoint] = None
+    # Punto (GPS o BP) al que le corresponde el comentario "--GS" que
+    # sigue al registro -- se anula igual que `current_point`.
+    gs_target: Optional[ChcnavPoint] = None
     n_sp_omitidos = 0
     n_bases = 0
     # Altura de antena/jalón vigente en el punto actual de la lectura del
@@ -497,9 +717,14 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
         line = raw_line.strip()
         if not line:
             current_point = None
+            gs_target = None
             continue
 
         if line.startswith("--"):
+            if es_surpad and gs_target is not None:
+                mgs = _GS_COMMENT_RE.match(line)
+                if mgs:
+                    gs_target._gs_height = _parse_float(mgs.group(1))
             m = _LOCALIZATION_RE.match(line)
             if m:
                 val = m.group(1).strip()
@@ -518,6 +743,7 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
         # después de su propio registro GPS, nunca después de otro
         # registro intermedio.
         current_point = None
+        gs_target = None
 
         parsed = _split_rw5_record(line)
         if parsed is None:
@@ -529,31 +755,29 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
 
         if record_code == "GPS":
             name = (fields.get("PN") or "").strip()
-            lat = _parse_float(fields.get("LA"))
-            lon = _parse_float(fields.get("LN"))
+            lat = _coord(fields.get("LA"))
+            lon = _coord(fields.get("LN"))
             height = _parse_float(fields.get("EL"))
             if not name or lat is None or lon is None or height is None:
                 cf.warnings.append(
                     f"Línea {i + 1}: registro GPS incompleto (falta PN/LA/LN/EL), se omite."
                 )
                 continue
-            baseline_m = None
-            if current_base is not None:
-                dist = _haversine_m(lat, lon, current_base.lat, current_base.lon)
-                baseline_m = math.hypot(dist, height - current_base.height)
             point = ChcnavPoint(
                 name=name, lat=lat, lon=lon, height=height,
                 tipo=(suffix or "").strip(), line_no=i + 1,
                 ant_height=current_ant_height,
-                base_baseline_m=baseline_m,
-                base_station_name=(current_base.name if current_base is not None else None),
             )
             cf.points.append(point)
             current_point = point
+            gs_target = point
         elif record_code == "BP":
-            lat = _parse_float(fields.get("LA"))
-            lon = _parse_float(fields.get("LN"))
+            lat = _coord(fields.get("LA"))
+            lon = _coord(fields.get("LN"))
+            # SurPad escribe la altura de la primera base como 'ET' en vez de 'EL'.
             height = _parse_float(fields.get("EL"))
+            if height is None:
+                height = _parse_float(fields.get("ET"))
             if lat is None or lon is None or height is None:
                 cf.warnings.append(
                     f"Línea {i + 1}: registro BP (ocupación de base) sin LA/LN/EL completos, se omite."
@@ -567,6 +791,7 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
             )
             cf.points.append(base_point)
             current_base = base_point
+            gs_target = base_point
             # Un BP no trae, en el archivo de referencia, un bloque de
             # comentarios de calidad como el que sigue a un GPS (le sigue
             # un registro 'GS' con su posición en grilla local, que de
@@ -582,6 +807,10 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
             pass
         # Cualquier otro código de registro no reconocido: se ignora
         # también, por la misma razón (nunca se adivina qué es).
+
+    if es_surpad:
+        _aplicar_altura_gs(cf)
+    asignar_bases_vigentes(cf, colapsar_bases_repetidas=es_surpad)
 
     if n_sp_omitidos:
         cf.warnings.append(
@@ -626,7 +855,24 @@ def parse_rw5_text(text: str, path: str = "") -> ChcnavFile:
 _ENCODINGS_RW5 = ("utf-8-sig", "cp1252", "latin-1")
 
 
-def parse_rw5_file(path: str, encoding: Optional[str] = None) -> ChcnavFile:
+def leer_texto_con_fallback(path: str, encoding: Optional[str] = None) -> str:
+    """Lee un archivo de texto probando `_ENCODINGS_RW5` en orden (o sólo
+    `encoding` si se pasa uno explícito). Compartido por
+    `parse_rw5_file` y `surpad_parser` (el .raw de SurPad también está
+    en Windows-1252)."""
+    encodings = (encoding,) if encoding else _ENCODINGS_RW5
+    ultimo_error: Optional[UnicodeDecodeError] = None
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, newline="") as f:
+                return f.read()
+        except UnicodeDecodeError as e:
+            ultimo_error = e
+            continue
+    raise ultimo_error  # type: ignore[misc]
+
+
+def parse_rw5_file(path: str, encoding: Optional[str] = None, dialect: Optional[str] = None) -> ChcnavFile:
     """Lee y parsea un .rw5 de CHCNav/LandStar/SurPad desde disco.
 
     Si `encoding` no se especifica, se prueban en orden las de
@@ -636,23 +882,12 @@ def parse_rw5_file(path: str, encoding: Optional[str] = None) -> ChcnavFile:
     `_ENCODINGS_RW5` sobre por qué hace falta: un .rw5 real de SurPad
     con texto de Status en español tildado, guardado en Windows-1252).
     Pasar `encoding` fuerza una codificación específica y desactiva
-    este fallback."""
-    encodings = (encoding,) if encoding else _ENCODINGS_RW5
-    text = None
-    ultimo_error: Optional[UnicodeDecodeError] = None
-    for enc in encodings:
-        try:
-            with open(path, "r", encoding=enc, newline="") as f:
-                text = f.read()
-            break
-        except UnicodeDecodeError as e:
-            ultimo_error = e
-            continue
-    if text is None:
-        raise ultimo_error
+    este fallback. `dialect` fuerza "chcnav"/"surpad" (por defecto se
+    detecta del contenido, ver `detect_rw5_dialect`)."""
+    text = leer_texto_con_fallback(path, encoding)
     if not looks_like_rw5(text):
         raise ValueError(
             "El archivo no parece un .rw5 de CHCNav/LandStar/SurPad (no se "
             "encontraron registros 'JB'/'GPS')."
         )
-    return parse_rw5_text(text, path=path)
+    return parse_rw5_text(text, path=path, dialect=dialect)

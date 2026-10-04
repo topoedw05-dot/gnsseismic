@@ -778,7 +778,7 @@ TR = {
     "menu_add_hitarget": {"es": "Hi-Target (.csv/.raw)", "en": "Hi-Target (.csv/.raw)"},
     "menu_add_chcnav": {"es": "CHCNav (.rw5)", "en": "CHCNav (.rw5)"},
     "menu_add_stonex": {"es": "Stonex (.PD)", "en": "Stonex (.PD)"},
-    "menu_add_surpad": {"es": "SurPad (.rw5)", "en": "SurPad (.rw5)"},
+    "menu_add_surpad": {"es": "SurPad (.rw5 / .raw)", "en": "SurPad (.rw5 / .raw)"},
     "btn_remove_dc": {"es": "Quitar", "en": "Remove"},
     "tip_btn_remove_dc": {
         "es": "Quita de la lista el/los archivo(s) seleccionado(s) -- también borra la previsualización, la capa del mapa y la corrección de base si dependían de ese archivo.",
@@ -1343,11 +1343,11 @@ TR = {
     # contenido (`stonex_parser.looks_like_stonex_db`) se mantiene
     # además, como segunda validación.
     "filter_stonex_db": {"es": "Archivos PD (*.pd)", "en": "PD files (*.pd)"},
-    "dlg_add_surpad_title": {"es": "Seleccionar archivos .rw5 de SurPad", "en": "Select SurPad .rw5 files"},
+    "dlg_add_surpad_title": {"es": "Seleccionar archivos .rw5 o .raw de SurPad", "en": "Select SurPad .rw5 or .raw files"},
     # SurPad exporta un .rw5 de la misma familia de formato que
     # LandStar/CHCNav -- se reutiliza el mismo filtro de extensión
     # (ver `agregar_surpad()`/chcnav_parser.py).
-    "filter_surpad_rw5": {"es": "Archivos RW5 (*.rw5);;Todos (*.*)", "en": "RW5 files (*.rw5);;All files (*.*)"},
+    "filter_surpad_rw5": {"es": "Archivos SurPad (*.rw5 *.raw);;Todos (*.*)", "en": "SurPad files (*.rw5 *.raw);;All files (*.*)"},
     "err_stonex_wrong_extension": {
         "es": "{name}: sólo se reconocen archivos con extensión .PD.",
         "en": "{name}: only files with a .PD extension are recognized.",
