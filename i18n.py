@@ -100,14 +100,14 @@ TR = {
             "recupera solo al volver a abrirlo o cambiar de proyecto (evita "
             "subir datos con el CRS de otro proyecto). Si necesitás "
             "corregirlo en un proyecto ya abierto, elegí el CRS correcto y "
-            "usá el botón de abajo."
+            "usá \"Aplicar configuración\" (botón del fondo de la sección)."
         ),
         "en": (
             "The CRS a project is created with is saved with it and restored "
             "automatically when you reopen it or switch projects (avoids "
             "uploading data with another project's CRS). To correct it on a "
-            "project that is already open, pick the right CRS and use the "
-            "button below."
+            "project that is already open, pick the right CRS and use "
+            "\"Apply configuration\" (button at the bottom of the section)."
         ),
     },
     "warn_crs_not_saved_title": {"es": "CRS no guardado con este proyecto", "en": "CRS not saved with this project"},
@@ -371,8 +371,8 @@ TR = {
             "dos listas (o el proyecto es 2D), se sigue usando -- sin cambios "
             "-- el rumbo ajustado automáticamente por Track a partir de la "
             "geometría de PREPLOT. Para un proyecto ya creado en 2D, se puede "
-            "pasar a 3D en cualquier momento desde este grupo y el botón "
-            "\"Guardar configuración de levantamiento\"."
+            "pasar a 3D en cualquier momento eligiéndolo en \"Tipo de "
+            "levantamiento\" y pulsando \"Aplicar configuración\"."
         ),
         "en": (
             "2D/3D and line azimuths (Project): reviewed against GPSeismic's "
@@ -387,8 +387,8 @@ TR = {
             "If a point does not classify under either list (or the project "
             "is 2D), the line's automatically fitted PREPLOT-Track bearing is "
             "used instead, unchanged. An existing 2D project can be switched "
-            "to 3D at any time from this group and the \"Save survey "
-            "configuration\" button."
+            "to 3D at any time by choosing it in \"Survey type\" and "
+            "pressing \"Apply configuration\"."
         ),
     },
     "dlg_new_project_title": {
@@ -743,6 +743,114 @@ TR = {
         "en": "{n} external preplot points saved to PREPLOT.",
     },
 
+    # -- Rediseño v2.65.0 de "Preplot Sísmico": 3 pestañas, formulario en
+    # bloques, barra de acciones fija, tabla ampliada y CTA verde ---------
+    "pp_tab_generar": {"es": "Generar preplot manual", "en": "Generate preplot manually"},
+    "pp_tab_archivo": {"es": "Importar archivo externo (SPS / QLD)", "en": "Import external file (SPS / QLD)"},
+    "pp_tab_capa": {"es": "Importar capa de QGIS", "en": "Import QGIS layer"},
+    "pp_card_a": {"es": "A. Geometría base", "en": "A. Base geometry"},
+    "pp_card_b": {"es": "B. Espaciados y líneas", "en": "B. Spacing and lines"},
+    "pp_card_c": {"es": "C. Indexación y nomenclatura", "en": "C. Indexing and naming"},
+    "pp_lbl_tipo": {"es": "Tipo de preplot:", "en": "Preplot type:"},
+    "pp_lbl_def_linea": {"es": "Definir la línea:", "en": "Define the line:"},
+    "pp_origen_x": {"es": "Origen Este (X)", "en": "Origin Easting (X)"},
+    "pp_origen_y": {"es": "Origen Norte (Y)", "en": "Origin Northing (Y)"},
+    "pp_azimut": {"es": "Azimut de líneas (°)", "en": "Line azimuth (°)"},
+    "pp_ini_x": {"es": "Inicio Este (X)", "en": "Start Easting (X)"},
+    "pp_ini_y": {"es": "Inicio Norte (Y)", "en": "Start Northing (Y)"},
+    "pp_fin_x": {"es": "Final Este (X)", "en": "End Easting (X)"},
+    "pp_fin_y": {"es": "Final Norte (Y)", "en": "End Northing (Y)"},
+    "pp_longitud": {"es": "Longitud total (m)", "en": "Total length (m)"},
+    "pp_dist_lineas": {"es": "Distancia entre líneas (m)", "en": "Distance between lines (m)"},
+    "pp_dist_estaciones": {"es": "Distancia entre estaciones (m)", "en": "Distance between stations (m)"},
+    "pp_n_lineas": {"es": "Número de líneas", "en": "Number of lines"},
+    "pp_n_estaciones": {"es": "Estaciones por línea", "en": "Stations per line"},
+    "pp_num_linea": {"es": "Número de línea", "en": "Line number"},
+    "pp_primer_linea": {"es": "Primer Nº de línea", "en": "First line no."},
+    "pp_incr_linea": {"es": "Incremento de líneas", "en": "Line increment"},
+    "pp_dig_linea": {"es": "Dígitos Nº de línea", "en": "Line no. digits"},
+    "pp_primer_estacion": {"es": "Primer Nº de estación", "en": "First station no."},
+    "pp_incr_estacion": {"es": "Incremento de estación", "en": "Station increment"},
+    "pp_dig_estacion": {"es": "Dígitos Nº de estación", "en": "Station no. digits"},
+    "pp_descriptor": {"es": "Descriptor", "en": "Descriptor"},
+    "pp_tb_generar": {"es": "🛠  Generar en mapa (temporal)", "en": "🛠  Generate on map (temporary)"},
+    "pp_tb_limpiar": {"es": "🧹  Limpiar previsualización", "en": "🧹  Clear preview"},
+    "pp_tb_guardar": {"es": "💾  Guardar en PREPLOT", "en": "💾  Save to PREPLOT"},
+    "pp_tip_generar": {
+        "es": "Genera los puntos con los parámetros de arriba y los muestra en el mapa como una capa temporal "
+              "(la capa anterior se reemplaza).",
+        "en": "Generates the points with the parameters above and shows them on the map as a temporary layer "
+              "(the previous one is replaced).",
+    },
+    "pp_tip_limpiar": {
+        "es": "Quita la capa temporal del mapa y vacía la tabla; no toca lo ya guardado en PREPLOT.",
+        "en": "Removes the temporary layer from the map and empties the table; what is already saved in PREPLOT is untouched.",
+    },
+    "pp_tip_guardar": {
+        "es": "Guarda en la tabla PREPLOT del proyecto los puntos generados.",
+        "en": "Saves the generated points to the project's PREPLOT table.",
+    },
+    "pp_estado_vacio": {"es": "Sin puntos generados", "en": "No points generated"},
+    "pp_estado_listo": {
+        "es": "{n} puntos generados ({modo})",
+        "en": "{n} points generated ({modo})",
+    },
+    "pp_gen_truncado": {
+        "es": "Se muestran los primeros {shown} de {n} puntos (todos se guardan).",
+        "en": "Showing the first {shown} of {n} points (all of them are saved).",
+    },
+    "pp_card_archivo": {"es": "Archivo SPS o QLD", "en": "SPS or QLD file"},
+    "pp_card_capa": {"es": "Capa de puntos de QGIS", "en": "QGIS point layer"},
+    "pp_lbl_dig_linea_ext": {"es": "Dígitos Nº de línea", "en": "Line no. digits"},
+    "pp_lbl_dig_estacion_ext": {"es": "Dígitos Nº de estación", "en": "Station no. digits"},
+    "pp_tip_digitos_ext": {
+        "es": "Se usan para armar el nombre del punto desde un SPS y para separar línea/estación del nombre en un QLD.",
+        "en": "Used to build the point name from an SPS and to split line/station from the name in a QLD.",
+    },
+    "pp_campo_nombre": {"es": "Nombre / Código", "en": "Name / Code"},
+    "pp_campo_linea": {"es": "Línea / Track (opcional)", "en": "Line / Track (optional)"},
+    "pp_campo_estacion": {"es": "Estación / Bin (opcional)", "en": "Station / Bin (optional)"},
+    "pp_campo_cota": {"es": "Cota Z (opcional)", "en": "Z / Elevation (optional)"},
+    "pp_campo_descriptor": {"es": "Descriptor (opcional)", "en": "Descriptor (optional)"},
+    "pp_tip_refrescar_capas": {"es": "Actualizar la lista de capas", "en": "Refresh the layer list"},
+    "pp_lbl_processor": {"es": "Processor:", "en": "Processor:"},
+    "pp_ph_processor": {"es": "Persona que sube los datos", "en": "Person uploading the data"},
+
+    # -- Rediseño v2.66.0 de "Base de Datos" ---------------------------------
+    "bd_card_sql": {"es": "Consola SQL", "en": "SQL console"},
+    "bd_card_buscar": {"es": "Edición rápida: Buscar y reemplazar", "en": "Quick edit: Find and replace"},
+    "bd_card_mapeo": {"es": "Mapeo de columnas", "en": "Column mapping"},
+    "bd_card_salida": {"es": "Formato de salida", "en": "Output format"},
+    "bd_tb_run": {"es": "▶  Ejecutar", "en": "▶  Run"},
+    "bd_tb_save": {"es": "💾  Guardar", "en": "💾  Save"},
+    "bd_tb_delete": {"es": "🗑  Borrar", "en": "🗑  Delete"},
+    "bd_tb_apply": {"es": "✔  Aplicar", "en": "✔  Apply"},
+    "bd_tb_search": {"es": "🔍  Buscar", "en": "🔍  Find"},
+    "bd_tb_replace": {"es": "🔄  Reemplazar", "en": "🔄  Replace"},
+    "bd_tip_mas": {
+        "es": "Renombrar, importar y exportar consultas guardadas",
+        "en": "Rename, import and export saved queries",
+    },
+    "bd_resumen_n": {"es": "{n} registros cargados", "en": "{n} records loaded"},
+    "bd_resumen_uno": {"es": "1 registro cargado", "en": "1 record loaded"},
+    "bd_map_nombre": {"es": "Nombre / Punto", "en": "Name / Point"},
+    "bd_map_linea": {"es": "Línea (Track)", "en": "Line (Track)"},
+    "bd_map_punto": {"es": "Punto/Estación SPS (Bin)", "en": "SPS Point/Station (Bin)"},
+    "bd_map_x": {"es": "X / Este / Longitud", "en": "X / Easting / Longitude"},
+    "bd_map_y": {"es": "Y / Norte / Latitud", "en": "Y / Northing / Latitude"},
+    "bd_map_z": {"es": "Z / Elevación", "en": "Z / Elevation"},
+    "bd_map_codigo": {"es": "Código", "en": "Code"},
+    "bd_export_info": {
+        "es": "<table width='360'><tr><td>Shapefile y GeoPackage usan el mapeo de columnas de la izquierda "
+              "(Nombre y X/Y obligatorios). Excel (.csv) exporta la consulta tal cual, sin mapeo. "
+              "SPS genera archivos .S01 (fuente) o .R01 (receptor): al elegirlo aparecen sus opciones "
+              "de tipo de punto, índice y código fijo.</td></tr></table>",
+        "en": "<table width='360'><tr><td>Shapefile and GeoPackage use the column mapping on the left "
+              "(Name and X/Y required). Excel (.csv) exports the query as-is, without mapping. "
+              "SPS writes .S01 (source) or .R01 (receiver) files: choosing it shows its point type, "
+              "index and fixed code options.</td></tr></table>",
+    },
+
     # -- Sección: Importar datos de campo (antes "Importar .dc"; desde la
     # v2.8.0 soporta Trimble .dc e Hi-Target CSV, desde la v2.15.0 también
     # CHCNav .rw5, desde la v2.26.0 también la base SQLite de Stonex) ---
@@ -750,13 +858,19 @@ TR = {
         "es": (
             "Por ahora se pueden importar archivos .dc/.dsc de Trimble, "
             "CSV/.raw de Hi-Target (usando sus coordenadas geográficas "
-            "B/L/H), .rw5 de CHCNav y la base de datos de la app de campo "
-            "de Stonex. Está planeado agregar también otras marcas (South)."
+            "B/L/H), .rw5 de CHCNav, .rw5/.raw de SurPad, la base de datos "
+            "de la app de campo de Stonex y el CSV de SourceLink (posiciones "
+            "de vibros; el Unit ID de cada disparo se sube como Surveyor) y el "
+            ".xls de Inova (COG de cada VP, con altura de antena editable en HI). "
+            "Está planeado agregar también otras marcas (South)."
         ),
         "en": (
             "Right now Trimble .dc/.dsc files, Hi-Target CSV/.raw files "
             "(using their B/L/H geographic coordinates), CHCNav .rw5 files, "
-            "and Stonex's field-app database can be imported. Support for "
+            "SurPad .rw5/.raw files, Stonex's field-app database and the "
+            "SourceLink CSV (vibrator positions; each shot's Unit ID is "
+            "uploaded as Surveyor) and the Inova .xls (COG of each VP, antenna "
+            "height editable in HI) can be imported. Support for "
             "other brands is planned (South)."
         ),
     },
@@ -787,6 +901,248 @@ TR = {
     "chk_create_layer": {
         "es": "Crear capa de puntos en QGIS al importar",
         "en": "Create a points layer in QGIS on import",
+    },
+    "menu_add_sourcelink": {"es": "SourceLink (.csv, vibros)", "en": "SourceLink (.csv, vibroseis)"},
+    "dlg_add_sourcelink_title": {"es": "Seleccionar CSV de SourceLink (vibros)", "en": "Select SourceLink CSV files (vibroseis)"},
+    "filter_sourcelink_csv": {"es": "Archivos CSV (*.csv);;Todos (*.*)", "en": "CSV files (*.csv);;All files (*.*)"},
+    "log_sourcelink_summary": {
+        "es": "{name}  —  {n} disparos SourceLink ({unidades} vibros, {anulados} anulados omitidos)",
+        "en": "{name}  —  {n} SourceLink shots ({unidades} vibrators, {anulados} voided omitted)",
+    },
+    "menu_add_inova": {"es": "Inova (.xls, vibros COG)", "en": "Inova (.xls, vibroseis COG)"},
+    "dlg_add_inova_title": {"es": "Seleccionar libro Excel de Inova (.xls)", "en": "Select Inova Excel workbook (.xls)"},
+    "filter_inova_xls": {"es": "Libros Excel 97-2003 (*.xls *.XLS);;Todos (*.*)", "en": "Excel 97-2003 workbooks (*.xls *.XLS);;All files (*.*)"},
+    "log_inova_summary": {
+        "es": "{name}  —  {n} VP Inova (COG; {unidades} vibros, {fail} con estado Fail)",
+        "en": "{name}  —  {n} Inova VPs (COG; {unidades} vibrators, {fail} with Fail status)",
+    },
+    "tip_surveyor_inova": {
+        "es": (
+            "En el .xls de Inova cada VP trae el/los vibro(s) que lo registraron "
+            "(columna Unit de la hoja GPS, p.ej. \"7 y 8\"): se sube como Surveyor de "
+            "cada punto, por eso este campo no se usa."
+        ),
+        "en": (
+            "In an Inova .xls each VP carries the vibrator(s) that recorded it "
+            "(Unit column of the GPS sheet, e.g. \"7 y 8\"): it is uploaded as the "
+            "Surveyor of each point, so this field is not used."
+        ),
+    },
+    # -- Proyecto compartido (opcional) -- ver shared_project.py
+    "grp_shared": {"es": "Proyecto compartido (opcional)", "en": "Shared project (optional)"},
+    "btn_shared_enable": {"es": "Compartir este proyecto...", "en": "Share this project..."},
+    # -- Rediseño de la pestaña Proyecto (v2.64.0) --
+    "tb_proj_new": {"es": "✚ Nuevo", "en": "✚ New"},
+    "tb_proj_open": {"es": "▤ Abrir", "en": "▤ Open"},
+    "tb_proj_switch": {"es": "⇄ Mis proyectos", "en": "⇄ My projects"},
+    "tb_proj_refresh": {"es": "⟳ Actualizar", "en": "⟳ Refresh"},
+    "badge_post": {"es": "POSTPLOT {n}", "en": "POSTPLOT {n}"},
+    "badge_pre": {"es": "PREPLOT {n}", "en": "PREPLOT {n}"},
+    "badge_comp": {"es": "COMPARACION {n}", "en": "COMPARISON {n}"},
+    "tip_badge_post": {"es": "Puntos levantados cargados en POSTPLOT.", "en": "Surveyed points loaded in POSTPLOT."},
+    "tip_badge_pre": {"es": "Puntos de diseño cargados en PREPLOT.", "en": "Design points loaded in PREPLOT."},
+    "tip_badge_comp": {"es": "Filas guardadas en la tabla COMPARACION.", "en": "Rows saved in the COMPARACION table."},
+    "chk_shared_enable": {"es": "Habilitar proyecto compartido en la nube", "en": "Enable shared project in the cloud"},
+    "shared_info_tip": {
+        "es": (
+            "<table width='360'><tr><td><b>Proyecto compartido (opcional)</b><br>"
+            "Permite que varias oficinas vean o procesen el mismo proyecto: un solo editor a la vez y el "
+            "resto en solo lectura. Funciona con una carpeta sincronizada (por ejemplo Google Drive para "
+            "escritorio) o con una carpeta de red o de un servidor local. Deje la carpeta del proyecto "
+            "dentro de esa carpeta y active el interruptor. El proyecto sigue siendo un solo archivo; "
+            "para dejar de compartir, apague el interruptor.</td></tr></table>"
+        ),
+        "en": (
+            "<table width='360'><tr><td><b>Shared project (optional)</b><br>"
+            "Lets several offices view or process the same project: one editor at a time and everyone "
+            "else read-only. It works with a synced folder (for example Google Drive for desktop) or with "
+            "a network or local-server folder. Keep the project folder inside that folder and turn the "
+            "switch on. The project stays a single file; to stop sharing, turn the switch off.</td></tr></table>"
+        ),
+    },
+    "grp_config_geografica": {"es": "Configuración Geográfica", "en": "Geographic configuration"},
+    "grp_config_factor_survey": {"es": "Factor de Escala y Tipo de Levantamiento", "en": "Scale factor and survey type"},
+    "lbl_crs_title": {"es": "Sistema de coordenadas (CRS)", "en": "Coordinate system (CRS)"},
+    "lbl_factor_title": {"es": "Factor de escala (terreno ↔ grilla)", "en": "Scale factor (ground ↔ grid)"},
+    "fe_cap_lat": {"es": "Latitud (WGS84)", "en": "Latitude (WGS84)"},
+    "fe_cap_lon": {"es": "Longitud (WGS84)", "en": "Longitude (WGS84)"},
+    "fe_cap_alt": {"es": "Altura (m)", "en": "Height (m)"},
+    "tb_fe_map": {"es": "⌖ Clic en el mapa", "en": "⌖ Click on map"},
+    "tb_fe_calc": {"es": "▶ Calcular", "en": "▶ Calculate"},
+    "tb_fe_save": {"es": "✔ Guardar factor", "en": "✔ Save factor"},
+    "btn_aplicar_config": {"es": "Aplicar configuración", "en": "Apply configuration"},
+    "tip_btn_aplicar_config": {
+        "es": "Guarda con este proyecto el CRS de trabajo y el tipo de levantamiento (2D/3D) elegidos. El geoide se guarda al elegirlo y el factor de escala con \"Guardar factor\".",
+        "en": "Saves the chosen working CRS and survey type (2D/3D) with this project. The geoid is saved when you pick it and the scale factor with \"Save factor\".",
+    },
+    "msg_config_applied": {
+        "es": "Configuración aplicada a este proyecto: CRS {crs}, levantamiento {tipo}.",
+        "en": "Configuration applied to this project: CRS {crs}, {tipo} survey.",
+    },
+    "btn_shared_publish": {"es": "Publicar ahora", "en": "Publish now"},
+    "btn_shared_release": {"es": "Dejar de editar", "en": "Stop editing"},
+    "btn_shared_takeover": {"es": "Tomar el control", "en": "Take control"},
+    "btn_shared_refresh": {"es": "Actualizar", "en": "Refresh"},
+    "btn_shared_disable": {"es": "Dejar de compartir", "en": "Stop sharing"},
+    "shared_status_no_project": {
+        "es": "Abra o cree un proyecto. El modo compartido es opcional.",
+        "en": "Open or create a project. Shared mode is optional.",
+    },
+    "shared_status_not_shared": {
+        "es": (
+            "Este proyecto NO es compartido: se trabaja directamente sobre su archivo. Para que varias "
+            "oficinas lo vean y editen por turnos, deje la carpeta del proyecto dentro de una carpeta "
+            "sincronizada o de red (por ejemplo Google Drive para escritorio) y active el interruptor \"Habilitar proyecto compartido en la nube\"."
+        ),
+        "en": (
+            "This project is NOT shared: you work directly on its file. To let several offices view and "
+            "edit it in turns, keep the project folder inside a synced folder (for example Google Drive "
+            "for desktop) or a network folder and turn on the \"Enable shared project in the cloud\" switch."
+        ),
+    },
+    "shared_status_editor": {
+        "es": (
+            "Usted es el EDITOR de este proyecto compartido. Trabaja en una copia local y los cambios se "
+            "publican solos en la carpeta compartida (última publicación: {fecha}); las demás personas lo "
+            "ven en solo lectura."
+        ),
+        "en": (
+            "You are the EDITOR of this shared project. You work on a local copy and changes are published "
+            "to the shared folder automatically (last publication: {fecha}); everyone else sees it read-only."
+        ),
+    },
+    "shared_status_viewer": {
+        "es": "SOLO LECTURA. {editor} Está viendo la versión publicada el {fecha}.",
+        "en": "READ-ONLY. {editor} You are viewing the version published on {fecha}.",
+    },
+    "shared_viewer_nobody": {"es": "Nadie está editando ahora.", "en": "Nobody is editing right now."},
+    "shared_viewer_editing": {
+        "es": "Editando ahora: {quien} (desde {desde}, último latido hace {min} min{caida}).",
+        "en": "Editing now: {quien} (since {desde}, last heartbeat {min} min ago{caida}).",
+    },
+    "shared_viewer_stale": {"es": " -- posible sesión caída", "en": " -- session may have crashed"},
+    "shared_viewer_newer": {
+        "es": "Hay una versión más nueva publicada: pulse \"Actualizar\".",
+        "en": "A newer version has been published: press \"Refresh\".",
+    },
+    "shared_last_error": {"es": "Último aviso: {error}", "en": "Last notice: {error}"},
+    "shared_banner_readonly": {
+        "es": "PROYECTO COMPARTIDO EN SOLO LECTURA: no se puede escribir en la base de datos desde esta ventana. Use \"Tomar el control\" en la pestaña Proyecto para editar.",
+        "en": "SHARED PROJECT IN READ-ONLY MODE: this window cannot write to the database. Use \"Take control\" in the Project tab to edit.",
+    },
+    "shared_ro_title": {"es": "Solo lectura", "en": "Read-only"},
+    "shared_ro_blocked_body": {
+        "es": "Este proyecto compartido está abierto en solo lectura: otra persona es la editora. Pulse \"Tomar el control\" en la pestaña Proyecto si necesita editar.",
+        "en": "This shared project is open read-only: another person is the editor. Press \"Take control\" in the Project tab if you need to edit.",
+    },
+    "shared_open_title": {"es": "Proyecto compartido en uso", "en": "Shared project in use"},
+    "shared_open_body": {
+        "es": (
+            "{quien} está editando este proyecto compartido (desde {desde}, último latido hace {min} min{caida}).\n\n"
+            "Puede abrirlo en SOLO LECTURA para ver el avance, o TOMAR EL CONTROL (la otra persona pasará a solo "
+            "lectura y los cambios que no haya publicado se perderán para el proyecto)."
+        ),
+        "en": (
+            "{quien} is editing this shared project (since {desde}, last heartbeat {min} min ago{caida}).\n\n"
+            "You can open it READ-ONLY to see progress, or TAKE CONTROL (the other person becomes read-only and "
+            "any changes they have not published are lost to the project)."
+        ),
+    },
+    "btn_shared_open_ro": {"es": "Abrir en solo lectura", "en": "Open read-only"},
+    "btn_shared_open_takeover": {"es": "Tomar el control", "en": "Take control"},
+    "shared_lock_race_body": {
+        "es": "{quien} tomó el proyecto justo ahora. Vuelva a intentarlo.",
+        "en": "{quien} just took the project. Please try again.",
+    },
+    "shared_recover_title": {"es": "Cambios locales sin publicar", "en": "Unpublished local changes"},
+    "shared_recover_body": {
+        "es": "Se encontró una copia local de este proyecto con cambios que no llegaron a publicarse (una sesión anterior se cerró sin poder publicar). ¿Recuperarla y publicarla? Si responde No, se descarta y se usa la versión publicada.",
+        "en": "A local copy of this project with changes that were never published was found (a previous session closed before it could publish). Recover and publish it? If you answer No it is discarded and the published version is used.",
+    },
+    "shared_publish_error_title": {"es": "No se pudo publicar", "en": "Could not publish"},
+    "shared_publish_error_body": {
+        "es": "No se pudo publicar en la carpeta compartida (¿sin conexión o Drive sin sincronizar?): {error}\n\nSus cambios siguen a salvo en la copia local y se reintentará solo.",
+        "en": "Could not publish to the shared folder (offline or Drive not syncing?): {error}\n\nYour changes are safe in the local copy and publishing will be retried automatically.",
+    },
+    "shared_publish_ok_title": {"es": "Publicado", "en": "Published"},
+    "shared_publish_ok_body": {"es": "Versión publicada ({fecha}).", "en": "Version published ({fecha})."},
+    "shared_takeover_title": {"es": "Tomar el control", "en": "Take control"},
+    "shared_takeover_body": {
+        "es": "{quien} figura como editor{caida}. Si toma el control, esa persona pasará a solo lectura y lo que no haya publicado no se incluirá. ¿Continuar?",
+        "en": "{quien} is listed as the editor{caida}. If you take control that person becomes read-only and anything they have not published will not be included. Continue?",
+    },
+    "shared_lost_title": {"es": "Perdió el control del proyecto", "en": "You lost control of the project"},
+    "shared_lost_body": {
+        "es": "Otra persona tomó el control de este proyecto compartido. Esta ventana pasó a SOLO LECTURA sobre la versión que esa persona publique.",
+        "en": "Someone else took control of this shared project. This window is now READ-ONLY on the version that person publishes.",
+    },
+    "shared_lost_backup": {
+        "es": "Sus cambios sin publicar se guardaron como respaldo en:\n{path}",
+        "en": "Your unpublished changes were saved as a backup at:\n{path}",
+    },
+    "shared_enable_title": {"es": "Compartir proyecto", "en": "Share project"},
+    "shared_enable_body": {
+        "es": (
+            "Se marcará este proyecto como COMPARTIDO:\n{path}\n\n"
+            "Usted pasará a ser el editor (trabaja en una copia local y el plugin publica la base en la carpeta "
+            "del proyecto) y quien más lo abra lo verá en solo lectura. La carpeta del proyecto debe estar dentro "
+            "de una carpeta sincronizada (por ejemplo Google Drive para escritorio). ¿Continuar?"
+        ),
+        "en": (
+            "This project will be marked as SHARED:\n{path}\n\n"
+            "You become the editor (you work on a local copy and the plugin publishes the database to the project "
+            "folder) and anyone else who opens it sees it read-only. The project folder must be inside a synced "
+            "folder (for example Google Drive for desktop). Continue?"
+        ),
+    },
+    "shared_disable_title": {"es": "Dejar de compartir", "en": "Stop sharing"},
+    "shared_disable_body": {
+        "es": "Se publicará la versión actual y el proyecto volverá a trabajarse directamente sobre su archivo, sin bloqueo. ¿Continuar?",
+        "en": "The current version will be published and the project will go back to working directly on its file, without locking. Continue?",
+    },
+    "shared_new_title": {"es": "¿Proyecto compartido?", "en": "Shared project?"},
+    "shared_new_body": {
+        "es": "¿Quiere que este proyecto sea COMPARTIDO (varias oficinas, una carpeta sincronizada como Google Drive)?\n\n{path}\n\nEs opcional; se puede activar después desde la pestaña Proyecto.",
+        "en": "Do you want this project to be SHARED (several offices, a synced folder such as Google Drive)?\n\n{path}\n\nIt is optional; you can enable it later from the Project tab.",
+    },
+    "ph_surveyor_unit_id": {"es": "Unit ID (automático)", "en": "Unit ID (automatic)"},
+    "tip_surveyor_sourcelink": {
+        "es": (
+            "En el CSV de SourceLink cada disparo trae el número de su vibrador "
+            "(columna Unit ID): se sube como Surveyor de cada punto, por eso este "
+            "campo no se usa."
+        ),
+        "en": (
+            "In a SourceLink CSV each shot carries its vibrator number (Unit ID "
+            "column): it is uploaded as the Surveyor of each point, so this field is not used."
+        ),
+    },
+    "col_surveyor": {"es": "Surveyor", "en": "Surveyor"},
+    "lbl_processor_import": {
+        "es": "Processor (quien procesa/sube los datos):",
+        "en": "Processor (person processing/uploading the data):",
+    },
+    "tip_processor_import": {
+        "es": (
+            "Se guarda en la columna Processor de POSTPLOT para todos los "
+            "puntos que se suban en esta importación. Opcional."
+        ),
+        "en": (
+            "Saved in the Processor column of POSTPLOT for every point "
+            "uploaded in this import. Optional."
+        ),
+    },
+    "tip_surveyor_archivo": {
+        "es": (
+            "Topógrafo de este archivo de campo: se guarda en la columna "
+            "Surveyor de POSTPLOT para los puntos de ESTE archivo (cada "
+            "archivo cargado puede tener un topógrafo distinto). Opcional."
+        ),
+        "en": (
+            "Surveyor of this field file: saved in the Surveyor column of "
+            "POSTPLOT for the points of THIS file (each loaded file can have "
+            "a different surveyor). Optional."
+        ),
     },
     "lbl_track_digits": {
         "es": "Dígitos de línea (Track) en el nombre del punto:",
@@ -1164,85 +1520,92 @@ TR = {
     },
     "note_importar_botones": {
         "es": (
-            "Botones de esta pestaña (v2.62.0, nombres acortados a una palabra -- "
-            "agrupados acá por sección):\n\n"
-            "\"Archivos de campo\":\n"
-            "- \"Agregar...\": agrega uno o más archivos -- elige la marca en el "
-            "menú (Trimble .dc/.dsc, Hi-Target CSV/.raw, CHCNav .rw5, Stonex .PD).\n"
-            "- \"Quitar\": quita de la lista el/los archivo(s) seleccionado(s) (y "
+            "Guía de la pestaña (rediseño v2.63.0), por sección:\n\n"
+            "\"1. Archivo de Origen\":\n"
+            "- \"+\" (esquina superior): agrega uno o más archivos -- elige la "
+            "marca en el menú (Trimble .dc/.dsc, Hi-Target CSV/.raw, CHCNav .rw5, "
+            "SurPad, Stonex .PD, SourceLink, Inova).\n"
+            "- \"-\": quita de la lista el/los archivo(s) seleccionado(s) (y "
             "limpia la previsualización/capa del mapa/corrección de base si "
             "dependían de ese archivo).\n"
             "- \"Previsualizar\": procesa todos los archivos cargados, muestra la "
             "tabla editable de abajo y la compara de una vez contra el PREPLOT.\n\n"
-            "\"Comparación con PREPLOT\":\n"
-            "- \"Actualizar\": vuelve a comparar con la tolerancia/emparejamiento "
-            "aproximado elegidos, sin releer los archivos de campo.\n\n"
-            "\"Corrección de base RTK\" (sólo visible si hay una base detectada):\n"
-            "- \"Aplicar\": traslada todos los puntos levantados con cada base por "
-            "la diferencia entre su coordenada libre y la corregida.\n\n"
-            "\"Editar en bloque\":\n"
-            "- \"Aplicar\": escribe el valor elegido (Altura de antena o "
-            "Descriptor) en todos los puntos incluidos todavía no subidos.\n\n"
-            "\"Consultar / filtrar antes de subir\":\n"
-            "- \"Guardar...\": guarda el filtro actual con un nombre propio (o "
-            "sobrescribe uno ya guardado).\n"
-            "- \"Agregar\" (del asistente): arma una condición con la columna/"
-            "condición/valor elegidos y la agrega al cuadro de filtro.\n"
-            "- \"Filtrar\": corre la condición del cuadro y resalta las filas que "
-            "cumplen.\n"
-            "- \"Limpiar\": borra el filtro actual (ya no resalta ninguna fila).\n"
-            "- \"Marcar\"/\"Desmarcar\": activa/desactiva \"Incluir\" en los puntos "
-            "que cumplen el filtro.\n"
-            "- \"Mapa\": muestra sólo los puntos filtrados en una capa aparte.\n"
-            "- \"Exportar...\": exporta la previsualización (filtrada o completa) "
-            "en el formato elegido, sin subir nada a la base de datos.\n\n"
-            "\"Finalizar importación\":\n"
+            "\"2. Filtrado Avanzado\":\n"
+            "- \"Filtro predeterminado\" + \"Guardar...\": elige un filtro de "
+            "fábrica o propio, o guarda el actual con un nombre.\n"
+            "- Asistente (Columna | Condición | Valor | Unir con) y \"+\": agrega "
+            "la condición armada al filtro actual, sin escribir SQL.\n"
+            "- \"▸ Modo Desarrollador (SQL)\": muestra el cuadro con la condición "
+            "SQL cruda (oculto por defecto), para editarla a mano.\n"
+            "- Barra: \"Filtrar\" (corre la condición y resalta las filas), "
+            "\"Limpiar\", \"Mapa\" (sólo los puntos filtrados en una capa "
+            "aparte), \"Marcar\"/\"Desmarcar\" (activa/desactiva \"Incluir\" en "
+            "los puntos que cumplen el filtro).\n\n"
+            "Bloques desplegables (cerrados por defecto; la cabecera resume su "
+            "estado, un clic los abre):\n"
+            "- \"PREPLOT\": tolerancia (5 m por defecto), emparejamiento "
+            "aproximado de nombres (desmarcado por defecto) y \"Actualizar\" "
+            "para volver a comparar sin releer los archivos.\n"
+            "- \"Editar en bloque\": \"Aplicar\" escribe el valor elegido "
+            "(Altura de antena o Descriptor) en todos los puntos incluidos "
+            "todavía no subidos.\n"
+            "- \"Corrección de base RTK\" (sólo visible si hay una base "
+            "detectada): \"Aplicar\" traslada los puntos levantados con cada base "
+            "por la diferencia entre su coordenada libre y la corregida.\n\n"
+            "\"3. Formato y Finalización\":\n"
+            "- Formato + \"Exportar...\": exporta la previsualización (filtrada o "
+            "completa) en el formato elegido, sin subir nada a la base de datos.\n"
+            "- Interruptor \"Crear capa de puntos en QGIS\": crea (o no) la capa al "
+            "subir.\n"
             "- \"Duplicados\": compara los nombres contra los que ya existen en "
             "POSTPLOT y resalta en rojo los que coinciden (sólo un aviso).\n"
-            "- \"Subir\": sube a POSTPLOT los puntos con \"Incluir\" marcado.\n"
             "- \"▸ Mostrar registro\"/\"▾ Ocultar registro\": despliega/oculta el "
-            "detalle de lo procesado -- sigue recibiendo texto esté visible o no."
+            "detalle de lo procesado -- sigue recibiendo texto esté visible o no.\n"
+            "- \"Subir\" (botón verde grande): sube a POSTPLOT los puntos con "
+            "\"Incluir\" marcado."
         ),
         "en": (
-            "This tab's buttons (v2.62.0, shortened to one word -- grouped here "
-            "by section):\n\n"
-            "\"Field files\":\n"
-            "- \"Add...\": adds one or more files -- pick the brand from the menu "
-            "(Trimble .dc/.dsc, Hi-Target CSV/.raw, CHCNav .rw5, Stonex .PD).\n"
-            "- \"Remove\": removes the selected file(s) from the list (also "
-            "clears the preview/map layer/base correction if they depended on "
-            "it).\n"
+            "Tab guide (v2.63.0 redesign), by section:\n\n"
+            "\"1. Source file\":\n"
+            "- \"+\" (top corner): adds one or more files -- pick the brand from "
+            "the menu (Trimble .dc/.dsc, Hi-Target CSV/.raw, CHCNav .rw5, SurPad, "
+            "Stonex .PD, SourceLink, Inova).\n"
+            "- \"-\": removes the selected file(s) from the list (also clears the "
+            "preview/map layer/base correction if they depended on it).\n"
             "- \"Preview\": processes every loaded file, shows the editable table "
             "below, and compares it against PREPLOT right away.\n\n"
-            "\"Comparison with PREPLOT\":\n"
-            "- \"Refresh\": re-compares with the chosen tolerance/approximate "
-            "matching, without re-reading the field files.\n\n"
-            "\"RTK base correction\" (only shown if a base was detected):\n"
-            "- \"Apply\": shifts every point surveyed with each base by the "
-            "difference between its free coordinate and the corrected one.\n\n"
-            "\"Bulk edit\":\n"
-            "- \"Apply\": writes the chosen value (Antenna height or Descriptor) "
-            "to every included point not yet uploaded.\n\n"
-            "\"Query / filter before uploading\":\n"
-            "- \"Save...\": saves the current filter under your own name (or "
-            "overwrites one already saved).\n"
-            "- \"Add\" (wizard): builds a condition from the chosen column/"
-            "condition/value and adds it to the filter box.\n"
-            "- \"Filter\": runs the condition from the box and highlights the "
-            "matching rows.\n"
-            "- \"Clear\": clears the current filter (no row stays highlighted).\n"
-            "- \"Check\"/\"Uncheck\": checks/unchecks \"Include\" on the points "
-            "matching the filter.\n"
-            "- \"Map\": shows only the filtered points in a separate layer.\n"
-            "- \"Export...\": exports the preview (filtered or complete) in the "
-            "chosen format, without uploading anything to the database.\n\n"
-            "\"Finish import\":\n"
+            "\"2. Advanced filtering\":\n"
+            "- \"Default filter\" + \"Save...\": pick a factory or your own filter, "
+            "or save the current one under a name.\n"
+            "- Wizard (Column | Condition | Value | Join with) and \"+\": adds the "
+            "built condition to the current filter, no SQL needed.\n"
+            "- \"▸ Developer mode (SQL)\": shows the box with the raw SQL "
+            "condition (hidden by default), to edit it by hand.\n"
+            "- Toolbar: \"Filter\" (runs the condition and highlights rows), "
+            "\"Clear\", \"Map\" (only the filtered points in a separate layer), "
+            "\"Check\"/\"Uncheck\" (checks/unchecks \"Include\" on the points "
+            "matching the filter).\n\n"
+            "Collapsible blocks (closed by default; the header summarizes their "
+            "state, one click opens them):\n"
+            "- \"PREPLOT\": tolerance (5 m by default), approximate name matching "
+            "(unchecked by default) and \"Refresh\" to compare again without "
+            "re-reading the files.\n"
+            "- \"Bulk edit\": \"Apply\" writes the chosen value (Antenna height "
+            "or Descriptor) to every included point not yet uploaded.\n"
+            "- \"RTK base correction\" (only shown if a base was detected): "
+            "\"Apply\" shifts the points surveyed with each base by the difference "
+            "between its free coordinate and the corrected one.\n\n"
+            "\"3. Format and finish\":\n"
+            "- Format + \"Export...\": exports the preview (filtered or complete) "
+            "in the chosen format, without uploading anything to the database.\n"
+            "- \"Create a points layer in QGIS\" switch: creates (or not) the "
+            "layer on upload.\n"
             "- \"Duplicates\": compares the names against the ones already in "
             "POSTPLOT and highlights matches in red (just a warning).\n"
-            "- \"Upload\": uploads the points with \"Include\" checked to "
-            "POSTPLOT.\n"
             "- \"▸ Show log\"/\"▾ Hide log\": shows/hides the processing detail -- "
-            "it keeps receiving text whether it's visible or not."
+            "it keeps receiving text whether it's visible or not.\n"
+            "- \"Upload\" (big green button): uploads the points with \"Include\" "
+            "checked to POSTPLOT."
         ),
     },
     "note_check_db_duplicates": {
@@ -1297,6 +1660,69 @@ TR = {
         "en": "No preview point matches, by name, a point already in POSTPLOT.",
     },
     "btn_upload_dc": {"es": "Subir", "en": "Upload"},
+    "btn_upload_retire_dc": {"es": "Subir/Retirar", "en": "Upload/Withdraw"},
+    "tip_btn_upload_retire_dc": {
+        "es": (
+            "Ya subiste puntos a POSTPLOT. Al presionar puedes subir los puntos "
+            "pendientes o RETIRAR de la base de datos los puntos de la última subida."
+        ),
+        "en": (
+            "You already uploaded points to POSTPLOT. Click to upload the pending "
+            "points or WITHDRAW the last upload's points from the database."
+        ),
+    },
+    "dlg_upload_retire_title": {"es": "Subir / Retirar", "en": "Upload / Withdraw"},
+    "dlg_upload_retire_body": {
+        "es": "La última subida insertó {n} punto(s) en POSTPLOT. ¿Qué quieres hacer?",
+        "en": "The last upload inserted {n} point(s) into POSTPLOT. What do you want to do?",
+    },
+    "btn_dialog_upload_pending": {"es": "Subir pendientes", "en": "Upload pending"},
+    "btn_dialog_retire_last": {
+        "es": "Retirar los {n} punto(s) de la última subida",
+        "en": "Withdraw the last upload's {n} point(s)",
+    },
+    "confirm_retire_upload_title": {"es": "Retirar última subida", "en": "Withdraw last upload"},
+    "confirm_retire_upload_body": {
+        "es": (
+            "Se borrarán de POSTPLOT los {n} punto(s) de la última subida. "
+            "Los puntos volverán a la previsualización como pendientes. ¿Continuar?"
+        ),
+        "en": (
+            "The {n} point(s) of the last upload will be deleted from POSTPLOT. "
+            "They will return to the preview as pending. Continue?"
+        ),
+    },
+    "warn_retire_upload_title": {"es": "No se pudo retirar", "en": "Could not withdraw"},
+    "warn_retire_upload_error": {
+        "es": "No se pudieron borrar los puntos de la base de datos: {error}",
+        "en": "The points could not be deleted from the database: {error}",
+    },
+    "info_retire_upload_title": {"es": "Subida retirada", "en": "Upload withdrawn"},
+    "info_retire_upload_body": {
+        "es": "Se retiraron {n} punto(s) de POSTPLOT.",
+        "en": "{n} point(s) were withdrawn from POSTPLOT.",
+    },
+    "log_retire_upload_ok": {
+        "es": "Subida retirada: {n} punto(s) borrado(s) de POSTPLOT.",
+        "en": "Upload withdrawn: {n} point(s) deleted from POSTPLOT.",
+    },
+    "msg_import_done_retire_hint": {
+        "es": "Si fue un error, usa el botón \"Subir/Retirar\" para retirar estos puntos de la base de datos.",
+        "en": "If this was a mistake, use the \"Upload/Withdraw\" button to withdraw these points from the database.",
+    },
+    "warn_upload_duplicates_title": {"es": "Puntos ya existentes en la base de datos", "en": "Points already in the database"},
+    "warn_upload_duplicates_body": {
+        "es": (
+            "{n} punto(s) que vas a subir ya existen en POSTPLOT por nombre (ej: {ejemplos}).\n\n"
+            "Si continúas quedarán duplicados. ¿Estás seguro de continuar?\n\n"
+            "(Si te equivocas, podrás retirarlos con el botón \"Subir/Retirar\".)"
+        ),
+        "en": (
+            "{n} point(s) you are about to upload already exist in POSTPLOT by name (e.g. {ejemplos}).\n\n"
+            "If you continue they will be duplicated. Are you sure you want to continue?\n\n"
+            "(If you make a mistake, you can withdraw them with the \"Upload/Withdraw\" button.)"
+        ),
+    },
     "tip_btn_upload_dc": {
         "es": "Sube a POSTPLOT todos los puntos con \"Incluir\" marcado, con el nombre/altura de antena/descriptor/comentario que hayas editado en la tabla.",
         "en": "Uploads every point with \"Include\" checked to POSTPLOT, using the name/antenna height/descriptor/comment you edited in the table.",
@@ -1316,6 +1742,36 @@ TR = {
     "lbl_log": {"es": "Registro:", "en": "Log:"},
     "btn_log_show": {"es": "▸ Mostrar registro", "en": "▸ Show log"},
     "btn_log_hide": {"es": "▾ Ocultar registro", "en": "▾ Hide log"},
+    # -- Rediseño de "Importar datos de campo" (v2.63.0) --
+    "grp_origen_card": {"es": "1. Archivo de Origen", "en": "1. Source file"},
+    "grp_filtrado_card": {"es": "2. Filtrado Avanzado", "en": "2. Advanced filtering"},
+    "grp_finalizar_card": {"es": "3. Formato y Finalización", "en": "3. Format and finish"},
+    "ph_filtro_wizard_valor_lbl": {"es": "Valor:", "en": "Value:"},
+    "lbl_filtro_actual": {"es": "Condición actual: {c}", "en": "Current condition: {c}"},
+    "btn_sql_dev_show": {"es": "▸ Modo Desarrollador (SQL)", "en": "▸ Developer mode (SQL)"},
+    "btn_sql_dev_hide": {"es": "▾ Modo Desarrollador (SQL)", "en": "▾ Developer mode (SQL)"},
+    "tip_btn_sql_dev": {
+        "es": "Muestra u oculta el cuadro con la condición SQL cruda del filtro -- para usuarios avanzados que quieran escribirla o ajustarla a mano.",
+        "en": "Shows or hides the box with the filter's raw SQL condition -- for advanced users who want to write or tweak it by hand.",
+    },
+    "tb_filter": {"es": "▶ Filtrar", "en": "▶ Filter"},
+    "tb_clear": {"es": "✕ Limpiar", "en": "✕ Clear"},
+    "tb_map": {"es": "◎ Mapa", "en": "◎ Map"},
+    "tb_mark": {"es": "☑ Marcar", "en": "☑ Check"},
+    "tb_unmark": {"es": "☐ Desmarcar", "en": "☐ Uncheck"},
+    "acc_preplot_title": {"es": "PREPLOT", "en": "PREPLOT"},
+    "acc_preplot_summary": {
+        "es": "Tolerancia {tol} m · Nombre aproximado: {aprox} ({estado})",
+        "en": "Tolerance {tol} m · Approximate name: {aprox} ({estado})",
+    },
+    "acc_bulk_title": {"es": "Editar en bloque", "en": "Bulk edit"},
+    "acc_state_active": {"es": "Activo", "en": "Active"},
+    "acc_state_no_preplot": {"es": "Sin PREPLOT", "en": "No PREPLOT"},
+    "acc_state_waiting": {"es": "En espera", "en": "Waiting"},
+    "acc_yes": {"es": "Sí", "en": "Yes"},
+    "acc_no": {"es": "No", "en": "No"},
+    "acc_empty": {"es": "(vacío)", "en": "(empty)"},
+    "acc_none": {"es": "(ninguna)", "en": "(none)"},
     "dlg_add_dc_title": {"es": "Seleccionar archivos .dc/.dsc", "en": "Select .dc/.dsc files"},
     "filter_dc": {
         "es": "Trimble (*.dc *.dsc);;Archivos DC (*.dc);;Archivos DSC (*.dsc);;Todos (*.*)",
@@ -2245,8 +2701,8 @@ TR = {
     "chk_sr_exact": {"es": "Coincidencia exacta", "en": "Exact match"},
     "lbl_sr_replace": {"es": "Reemplazar por:", "en": "Replace with:"},
     "ph_sr_replace": {
-        "es": "Valor nuevo (sólo para \"Reemplazar\")...",
-        "en": "New value (only for \"Replace\")...",
+        "es": "Valor nuevo...",
+        "en": "New value...",
     },
     "btn_sr_search": {"es": "Buscar", "en": "Find"},
     "btn_sr_replace_all": {"es": "Reemplazar", "en": "Replace"},

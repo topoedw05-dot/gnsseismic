@@ -30,6 +30,10 @@ import hitarget_parser
 import hitarget_raw_parser
 import chcnav_parser
 import surpad_parser
+import sourcelink_parser
+import inova_parser
+import punto_nombre
+import shared_project
 import stonex_parser
 import i18n
 import qld_reader
@@ -1107,6 +1111,29 @@ class TestDBSchema(unittest.TestCase):
         n = db_schema.insert_rows(conn, "POSTPLOT", db_schema.POSTPLOT_COLUMNS, filas)
         self.assertEqual(n, 1)
         self.assertEqual(db_schema.table_row_count(conn, "POSTPLOT"), 1)
+
+    def test_insert_with_ids_and_withdraw_last_upload(self):
+        """v2.62.10: "Subir/Retirar" -- se registran los ID insertados y se
+        retiran EXACTAMENTE esos, sin tocar filas que ya estaban."""
+        conn = db_schema.create_project_db(self.path, overwrite=True)
+        db_schema.insert_rows(conn, "POSTPLOT", db_schema.POSTPLOT_COLUMNS,
+                              [{"Station_Text": "VIEJO1", "Surveyor": "Ana"}])
+        filas = [{"Station_Text": f"P{i}", "Processor": "Luis", "Surveyor": "Juan"} for i in range(1300)]
+        ids = db_schema.insert_rows_with_ids(conn, "POSTPLOT", db_schema.POSTPLOT_COLUMNS, filas)
+        self.assertEqual(len(ids), 1300)
+        self.assertEqual(len(set(ids)), 1300)
+        self.assertEqual(db_schema.table_row_count(conn, "POSTPLOT"), 1301)
+        borradas = db_schema.delete_rows_by_id_chunked(conn, "POSTPLOT", ids)
+        self.assertEqual(borradas, 1300)
+        restantes = [r[0] for r in conn.execute("SELECT Station_Text FROM POSTPLOT")]
+        self.assertEqual(restantes, ["VIEJO1"])
+
+    def test_insert_with_ids_rolls_back_on_error(self):
+        conn = db_schema.create_project_db(self.path, overwrite=True)
+        filas = [{"Station_Text": "A"}, {"Station_Text": "B", "ID": "no-es-entero"}]
+        with self.assertRaises(Exception):
+            db_schema.insert_rows_with_ids(conn, "POSTPLOT", ["Station_Text", "ID"], filas)
+        self.assertEqual(db_schema.table_row_count(conn, "POSTPLOT"), 0)
 
     def test_open_existing_adds_missing_tables_without_dropping_data(self):
         conn = db_schema.create_project_db(self.path, overwrite=True)
@@ -2675,6 +2702,105 @@ class TestSurpadParsers(unittest.TestCase):
             self.assertAlmostEqual(pa[k].height, pb[k].height, places=3)
 
 
+_SOURCELINK_HEADER = (
+    "Encoder Index,Void,Shot ID,File Num,EP ID,Line,Station,Date,Time,Comment,TB Local Time,"
+    "TB UTC Time,TB Date,TB Time,TB Micro,Record Index,EP Count,Crew ID,Unit ID,Start Code,"
+    "Sweep Checksum,Param Checksum,Phase Max,Phase Avg,Force Max,Force Avg,THD Max,THD Avg,"
+    "Force Out,GPS Time,Lat,Lon,Altitude,GPS Altitude,Sats,PDOP,HDOP,VDOP,Age,Quality,X,Y,"
+)
+
+
+def _sourcelink_row(shot, line, station, unit, lat, lon, alt, void="", comment="", quality="RTK-Fix",
+                    local="2026/02/19 08:25:08.488000", utc="2026/02/19 11:25:08.488000"):
+    # Mismas posiciones de columna que el encabezado de arriba (se rellenan
+    # con valores neutros las que el parser no usa).
+    vals = {
+        "Encoder Index": shot, "Void": void, "Shot ID": shot, "File Num": shot, "EP ID": "0",
+        "Line": f"{line}.00", "Station": f"{station}.00", "Date": "02/19/2026", "Time": "08:25:08",
+        "Comment": comment, "TB Local Time": local, "TB UTC Time": utc, "TB Date": "02/19/2026",
+        "TB Time": "11:25:08", "TB Micro": "488000", "Record Index": shot, "EP Count": "1",
+        "Crew ID": "1", "Unit ID": unit, "Start Code": "1", "Sweep Checksum": "17D8",
+        "Param Checksum": "2768", "Phase Max": "2", "Phase Avg": "0", "Force Max": "71",
+        "Force Avg": "67", "THD Max": "19", "THD Avg": "15", "Force Out": "H",
+        "GPS Time": "11:25:08", "Lat": lat, "Lon": lon, "Altitude": alt, "GPS Altitude": alt,
+        "Sats": "24", "PDOP": "1", "HDOP": "0.5", "VDOP": "0.9", "Age": "0.0", "Quality": quality,
+        "X": "2469311.78966987", "Y": "5896340.62971071",
+    }
+    cols = _SOURCELINK_HEADER.rstrip(",").split(",")
+    return ",".join(vals[c] for c in cols) + ","
+
+
+class TestSourceLinkParser(unittest.TestCase):
+    """v2.62.11: CSV de SourceLink (posiciones de vibros) -- Unit ID -> Surveyor."""
+
+    def _texto(self):
+        filas = [
+            _sourcelink_row("53946", 5127, 1881, "7", "-37.0816230333333", "-69.3451348333333", "909.39"),
+            _sourcelink_row("53953", 5133, 1899, "4", "-37.078723", "-69.342535", "912.39", void="Void"),
+            _sourcelink_row("53987", 5133, 1899, "4", "-37.078921", "-69.342586", "912.52"),
+            _sourcelink_row("54214", 5097, 1994, "9", "-37.095052", "-69.329275", "887.64",
+                            comment="Desplazada 5097 1994", quality="RTK-Float"),
+            _sourcelink_row("54300", 5097, 1994, "10", "-37.095053", "-69.329276", "887.60"),
+        ]
+        return _SOURCELINK_HEADER + "\n" + "\n".join(filas) + "\n"
+
+    def test_looks_like(self):
+        self.assertTrue(sourcelink_parser.looks_like_sourcelink(self._texto()))
+        self.assertFalse(sourcelink_parser.looks_like_sourcelink("JB,NM1\nGPS,PN1,LA1,LN1,EL1\n"))
+        self.assertFalse(sourcelink_parser.looks_like_sourcelink(""))
+
+    def test_parse_points_unit_id_and_void(self):
+        sf = sourcelink_parser.parse_sourcelink_text(self._texto())
+        self.assertEqual(sf.n_void, 1)
+        self.assertEqual(sf.n_points, 4)  # el 'Void' se omite
+        p = sf.points[0]
+        self.assertEqual(p.name, "51271881")
+        self.assertEqual((p.track, p.bin), ("5127", "1881"))
+        self.assertEqual(p.surveyor, "7")  # Unit ID -> Surveyor
+        self.assertEqual(p.tipo, "SO")
+        self.assertAlmostEqual(p.lat, -37.0816230333333, places=12)
+        self.assertAlmostEqual(p.lon, -69.3451348333333, places=12)
+        self.assertAlmostEqual(p.height, 909.39)
+        self.assertEqual((p.n_sats, p.pdop, p.hdop, p.vdop), (24, 1.0, 0.5, 0.9))
+        self.assertEqual(p.quality, "RTK-Fix")
+        self.assertEqual(p.survey_time_local, "2026-02-19 08:25:08")
+        self.assertEqual(p.survey_time_gmt, "2026-02-19 11:25:08")
+        self.assertEqual(p.julian_date_local, "2026050")
+        self.assertEqual(sf.units, ["4", "7", "9", "10"])
+        self.assertEqual(sf.points[2].comment, "Desplazada 5097 1994")
+        self.assertEqual(sf.points[2].surveyor, "9")
+        self.assertTrue(any("anulado" in w for w in sf.warnings))
+        # Mismo Line/Station con otro vibro: nombre repetido avisado.
+        self.assertEqual(sf.duplicated_names(), {"50971994": 2})
+        self.assertTrue(any("repetido" in w for w in sf.warnings))
+
+    def test_missing_columns_raises(self):
+        with self.assertRaises(ValueError):
+            sourcelink_parser.parse_sourcelink_text("Shot ID,Line\n1,2\n")
+
+    def test_file_with_cp1252_comment(self):
+        texto = self._texto().replace("Desplazada 5097 1994", "Desplazó ñandú")
+        with tempfile.TemporaryDirectory() as d:
+            ruta = os.path.join(d, "x.csv")
+            with open(ruta, "w", encoding="cp1252", newline="") as f:
+                f.write(texto)
+            sf = sourcelink_parser.parse_sourcelink_file(ruta)
+        self.assertEqual(sf.points[2].comment, "Desplazó ñandú")
+
+    def test_real_file(self):
+        import glob
+        cands = glob.glob("/root/.claude/uploads/*/*PSS_2026_02_19_07_19_14.csv")
+        if not cands:
+            self.skipTest("archivo real de SourceLink no disponible")
+        sf = sourcelink_parser.parse_sourcelink_file(cands[0])
+        self.assertEqual(sf.n_void, 27)
+        self.assertEqual(sf.n_points, 2010 - 27)
+        self.assertEqual(len(sf.units), 10)
+        self.assertEqual(sf.points[0].name, "51271881")
+        self.assertEqual(sf.points[0].surveyor, "7")
+        self.assertTrue(all(p.quality == "RTK-Fix" for p in sf.points))
+
+
 class TestI18n(unittest.TestCase):
     def test_all_keys_have_both_languages_non_empty(self):
         faltantes = []
@@ -3060,6 +3186,239 @@ class TestStonexParser(unittest.TestCase):
         self.assertAlmostEqual(lat, 10.161980782242969)
         self.assertAlmostEqual(lon, -75.32701219768245)
         self.assertAlmostEqual(altura, 12.343)
+
+
+def _hojas_inova_sinteticas():
+    """Libro Inova mínimo: 2 VP (uno con 2 vibros y altura de antena 2.50
+    en el archivo, otro sin altura -> 2.73) + una hoja de salida de la
+    macro que debe ignorarse."""
+    cog = [
+        ["File", "SLine", "Flag", "VibUnit", "Composite", "Easting", "Northing", "Elevation", "Antenna Height", "Status"],
+        ["3932", "6018", "   1012", "COG", "", "2547596.93", "5730837.44", "395.5", "N/A", "Pass"],
+        ["3932", "6018", "   1012", "7", "", "2547596.96", "5730842.80", "396.5", "0.0 Meters", "Pass"],
+        ["3933", "6018", "   1020", "COG", "", "2547599.04", "5730848.34", "397.0", "N/A", "Fail"],
+        ["3934", "6018", "   1030", "COG", "", "2547600.00", "5730850.00", "", "N/A", "Pass"],  # sin elevación
+    ]
+    gps = [
+        ["Dates", "File", "SLine", "Flag", "Unit", "Latitude", "Longitude", "Antenna Height",
+         "Satellites", "PDOP", "VDOP", "HDOP", "Station ID", "Quality"],
+        ["2026/08/28 11:29:54.032", "3932", "6018", "   1012", "7,", "38.5719133 S", "68.4538267 W", "2,50 Meters", "6", "1.0", "1.0", "0.5", "2", "4: RTK Fix"],
+        ["2026/08/28 11:30:10.000", "3932", "6018", "   1012", "8,", "38.5720100 S", "68.4538267 W", "0.0 Meters", "8", "2.0", "1.0", "0.7", "0", "4: RTK Fix"],
+        ["2026/08/28 23:50:00.000", "3933", "6018", "   1020", "7,8,", "38.5718733 S", "68.4538053 W", "0.0 Meters", "5", "1.5", "1.2", "0.9", "2", "5: RTK Float"],
+    ]
+    conv = [
+        ["Description", "Survey"],
+        ["Projection Zone:", "Transverse_Mercator"],
+        ["Long. of central meridian", "-69 degree"],
+        ["Grid origin", "-90 degree"],
+        ["Grid coord. at origin", "2500000 E, 0 N,"],
+        ["Scale factor", "1.000000 degree"],
+    ]
+    title = [["Client: Shell\nProspect: Sierras Blancas 2D", "", "Shooting System: INOVA VibProHD (0)\nCrew #: 2016"]]
+    return {
+        "GPS_3932_4283": gps, "TitlePage": title, "GPS_CONVERSION_3932_4283": conv,
+        "COG_3932_4283": cog,
+        "COG_GPSeismic_Export": [["Archivo", "Linea_Sismica"], ["x", "y"]],
+    }
+
+
+class TestInovaParser(unittest.TestCase):
+    def test_tm_inverse_matches_pyproj(self):
+        try:
+            from pyproj import Transformer
+        except ImportError:
+            self.skipTest("pyproj no disponible")
+        tr = Transformer.from_crs(22182, 4326, always_xy=True)
+        for e, n in ((2547596.93, 5730837.44), (2500000.0, 5000000.0), (2600000.0, 6500000.0)):
+            lon, lat = tr.transform(e, n)
+            lat2, lon2 = inova_parser.tm_inverse(e, n)
+            self.assertAlmostEqual(lat, lat2, places=8)  # ~1 mm
+            self.assertAlmostEqual(lon, lon2, places=8)
+
+    def test_synthetic_algorithm_matches_macro(self):
+        inf = inova_parser.parse_inova_sheets(_hojas_inova_sinteticas(), path="x.xls")
+        # la hoja "COG_GPSeismic_Export" no es origen y el VP sin elevación se omite
+        self.assertEqual([p.name for p in inf.points], ["60181012", "60181020"])
+        self.assertEqual(inf.n_sin_elevacion, 1)
+        self.assertEqual(inf.n_fail, 1)
+        p1, p2 = inf.points
+        self.assertEqual((p1.track, p1.bin, p1.file_no), ("6018", "1012", "3932"))
+        self.assertEqual(p1.units, ["7", "8"])
+        self.assertEqual(p1.surveyor, "7 y 8")
+        self.assertEqual(p2.units, ["7", "8"])
+        # altura de antena: primer valor distinto de cero (coma decimal OK) o 2.73
+        self.assertAlmostEqual(p1.antenna_height, 2.50)
+        self.assertTrue(p1.antenna_from_file)
+        self.assertAlmostEqual(p2.antenna_height, 2.73)
+        self.assertFalse(p2.antenna_from_file)
+        self.assertAlmostEqual(p1.height, 395.5)
+        self.assertAlmostEqual(p1.ground_height, 393.0)
+        self.assertAlmostEqual(p2.ground_height, 394.27)
+        # calidad por VP (promedios, mínimo, lecturas) y tipos de fix
+        self.assertEqual(p1.n_readings, 2)
+        self.assertEqual(p1.n_sats, 7)
+        self.assertEqual(p1.n_sats_min, 6)
+        self.assertAlmostEqual(p1.pdop, 1.5)
+        self.assertAlmostEqual(p1.hdop, 0.6)
+        self.assertEqual(p1.quality, "RTK Fix")
+        self.assertEqual(p2.quality, "RTK Float")
+        self.assertEqual(p1.base_station, "2 y 0")
+        # fecha: UTC de la última lectura; local = UTC-3 (cruza medianoche en p2)
+        self.assertEqual(p1.survey_time_gmt, "2026-08-28 11:30:10")
+        self.assertEqual(p1.survey_time_local, "2026-08-28 08:30:10")
+        self.assertEqual(p2.survey_time_gmt, "2026-08-28 23:50:00")
+        self.assertEqual(p2.survey_time_local, "2026-08-28 20:50:00")
+        self.assertEqual(p1.julian_date, "2026240")
+        # metadatos de TitlePage
+        self.assertEqual(inf.meta["Prospect"], "Sierras Blancas 2D")
+        self.assertEqual(inf.instrument, "INOVA VibProHD (0)")
+        # coordenadas = inversión de E/N (no el promedio de lecturas GPS)
+        self.assertAlmostEqual(p1.lat, -38.57196159, places=6)
+        self.assertAlmostEqual(p1.lon, -68.45382669, places=6)
+        self.assertTrue(any("sin elevación" in w for w in inf.warnings))
+
+    def test_without_conversion_sheet_uses_gps_mean(self):
+        hojas = _hojas_inova_sinteticas()
+        del hojas["GPS_CONVERSION_3932_4283"]
+        inf = inova_parser.parse_inova_sheets(hojas)
+        p1 = inf.points[0]
+        self.assertTrue(p1.latlon_from_gps_mean)
+        self.assertAlmostEqual(p1.lat, (-38.5719133 - 38.5720100) / 2, places=7)
+
+    def test_not_inova_raises(self):
+        with self.assertRaises(ValueError):
+            inova_parser.parse_inova_sheets({"Hoja1": [["a", "b"], [1, 2]]})
+
+    def test_real_xls(self):
+        import glob
+        archivos = glob.glob("/root/.claude/uploads/*/*3932_4283.XLS") + glob.glob("3932_4283.XLS")
+        if not archivos:
+            self.skipTest("archivo real de Inova no disponible")
+        inf = inova_parser.parse_inova_file(archivos[0])
+        self.assertEqual(inf.n_points, 352)
+        self.assertEqual(inf.n_fail, 29)
+        self.assertEqual(inf.points[0].name, "60181012")
+        self.assertAlmostEqual(inf.points[0].height, 395.5)
+        self.assertEqual(inf.points[0].surveyor, "7 y 8")
+        self.assertEqual(inf.units, ["1", "2", "3", "4", "5", "7", "8"])
+        # el único punto repetido (VP registrado en dos archivos) se avisa
+        self.assertEqual(list(inf.duplicated_names()), ["60171016"])
+
+
+class TestPuntoNombre(unittest.TestCase):
+    def test_numeric_name_splits_track_and_bin(self):
+        self.assertEqual(punto_nombre.derivados_de_nombre("60181012", 4), ("60181012", "6018", "1012"))
+        self.assertEqual(punto_nombre.derivados_de_nombre(" 60181012 ", 4), ("60181012", "6018", "1012"))
+
+    def test_non_numeric_name_gives_zeros(self):
+        # nombre con prefijo "D"/"?" -> 0/0/0, como en la base de datos real de GPSeismic
+        self.assertEqual(punto_nombre.derivados_de_nombre("D51802277", 4), ("0", "0", "0"))
+        self.assertEqual(punto_nombre.derivados_de_nombre("?52102279", 4), ("0", "0", "0"))
+        self.assertEqual(punto_nombre.derivados_de_nombre("", 4), ("0", "0", "0"))
+
+    def test_short_name_or_no_digits(self):
+        self.assertEqual(punto_nombre.derivados_de_nombre("1234", 4), ("1234", "0", "0"))
+        self.assertEqual(punto_nombre.derivados_de_nombre("60181012", 0), ("60181012", "0", "0"))
+
+    def test_station_value_numeric(self):
+        self.assertEqual(punto_nombre.station_value_numerico("60181012"), 60181012.0)
+        self.assertEqual(punto_nombre.station_value_numerico("D6018"), 0.0)
+        self.assertEqual(punto_nombre.station_value_numerico(None), 0.0)
+
+
+class TestSharedProject(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.drive = os.path.join(self.tmp.name, "drive", "database")
+        self.local = os.path.join(self.tmp.name, "local")
+        os.makedirs(self.drive)
+        self.db = os.path.join(self.drive, "proy.sqlite")
+        conn = db_schema.create_project_db(self.db, overwrite=True)
+        conn.close()
+
+    def test_marker_is_optional_and_toggles(self):
+        self.assertFalse(shared_project.is_shared(self.db))
+        shared_project.enable_shared(self.db)
+        self.assertTrue(shared_project.is_shared(self.db))
+        shared_project.disable_shared(self.db)
+        self.assertFalse(shared_project.is_shared(self.db))
+
+    def test_lock_single_editor_and_takeover(self):
+        a, b = shared_project.new_session_id(), shared_project.new_session_id()
+        ok, otro = shared_project.acquire_lock(self.db, a, "2.62.15")
+        self.assertTrue(ok)
+        self.assertIsNone(otro)
+        # B no puede tomarlo sin 'force' y ve quién lo tiene
+        ok, otro = shared_project.acquire_lock(self.db, b)
+        self.assertFalse(ok)
+        self.assertEqual(otro.session, a)
+        self.assertFalse(otro.is_stale())
+        # A renueva su latido; B lo toma a la fuerza (tomar el control)
+        self.assertTrue(shared_project.renew_lock(self.db, a))
+        ok, _ = shared_project.acquire_lock(self.db, b, force=True)
+        self.assertTrue(ok)
+        # A detecta que perdió el control; liberar no borra el bloqueo ajeno
+        self.assertFalse(shared_project.renew_lock(self.db, a))
+        shared_project.release_lock(self.db, a)
+        self.assertEqual(shared_project.read_lock(self.db).session, b)
+        shared_project.release_lock(self.db, b)
+        self.assertIsNone(shared_project.read_lock(self.db))
+
+    def test_stale_lock_and_unreadable_lock(self):
+        a = shared_project.new_session_id()
+        shared_project.acquire_lock(self.db, a)
+        import json
+        path = shared_project.lock_path(self.db)
+        d = json.load(open(path, encoding="utf-8"))
+        d["heartbeat"] = "2020-01-01T00:00:00Z"
+        json.dump(d, open(path, "w", encoding="utf-8"))
+        self.assertTrue(shared_project.read_lock(self.db).is_stale())
+        # un archivo a medio sincronizar (ilegible) se trata como libre
+        open(path, "w", encoding="utf-8").write("{no es json")
+        self.assertIsNone(shared_project.read_lock(self.db))
+        ok, _ = shared_project.acquire_lock(self.db, shared_project.new_session_id())
+        self.assertTrue(ok)
+
+    def test_lock_removed_by_hand_is_rewritten_by_heartbeat(self):
+        a = shared_project.new_session_id()
+        shared_project.acquire_lock(self.db, a)
+        os.remove(shared_project.lock_path(self.db))
+        self.assertTrue(shared_project.renew_lock(self.db, a))
+        self.assertEqual(shared_project.read_lock(self.db).session, a)
+
+    def test_publish_and_snapshot_roundtrip(self):
+        edit = shared_project.editor_copy_path(self.local, self.db)
+        shared_project.snapshot_published(self.db, edit)
+        conn = db_schema.create_project_db(edit, overwrite=False)
+        db_schema.set_project_setting(conn, "survey_type", "3D")
+        conn.execute("INSERT INTO POSTPLOT (Station_Text) VALUES ('60181012')")
+        conn.commit()
+        antes = shared_project.published_signature(self.db)
+        shared_project.publish(conn, self.db, os.path.join(self.local, "scratch"))
+        conn.close()
+        self.assertNotEqual(antes, shared_project.published_signature(self.db))
+        # la carpeta compartida queda sin temporales
+        self.assertEqual(sorted(os.listdir(self.drive)), ["proy.sqlite"])
+        # un lector recibe una copia completa con lo publicado
+        view = shared_project.viewer_copy_path(self.local, self.db)
+        shared_project.snapshot_published(self.db, view)
+        rc = sqlite3.connect(view)
+        try:
+            self.assertEqual(rc.execute("SELECT Station_Text FROM POSTPLOT").fetchall(), [("60181012",)])
+            self.assertEqual(db_schema.get_project_setting(rc, "survey_type"), "3D")
+            rc.execute("PRAGMA query_only = ON")
+            with self.assertRaises(sqlite3.OperationalError):
+                rc.execute("INSERT INTO POSTPLOT (Station_Text) VALUES ('x')")
+        finally:
+            rc.close()
+
+    def test_work_dirs_differ_by_published_path(self):
+        otro = os.path.join(self.tmp.name, "otra", "proy.sqlite")
+        self.assertNotEqual(
+            shared_project.editor_copy_path(self.local, self.db),
+            shared_project.editor_copy_path(self.local, otro),
+        )
 
 
 if __name__ == "__main__":

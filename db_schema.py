@@ -246,6 +246,32 @@ def register_table_description(
     conn.commit()
 
 
+def insert_rows_with_ids(conn: sqlite3.Connection, table: str, columns: List[str], rows: Iterable[Dict[str, Any]]) -> List[int]:
+    """Como `insert_rows`, pero devuelve la lista de `ID` (PRIMARY KEY)
+    asignados a cada fila insertada, en orden -- lo usa "Importar datos de
+    campo" para poder retirar de la base, después, EXACTAMENTE los puntos
+    de una subida (ver `delete_rows_by_id`). Si una inserción falla, se
+    hace rollback de las filas ya insertadas de esta llamada (para no
+    dejar una subida a medias confirmada por un commit posterior) y se
+    relanza el error."""
+    placeholders = ", ".join("?" for _ in columns)
+    col_list = ", ".join(columns)
+    # `table`/`columns` siempre vienen hardcodeados desde el propio plugin, nunca de texto del usuario
+    sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"  # nosec B608
+    ids: List[int] = []
+    cur = conn.cursor()
+    try:
+        for row in rows:
+            values = [row.get(c) for c in columns]
+            cur.execute(sql, values)
+            ids.append(cur.lastrowid)
+    except Exception:
+        conn.rollback()
+        raise
+    conn.commit()
+    return ids
+
+
 def insert_rows(conn: sqlite3.Connection, table: str, columns: List[str], rows: Iterable[Dict[str, Any]]) -> int:
     """Inserta filas (una por diccionario) en `table`, usando sólo las
     claves de `columns` presentes en cada fila (las que falten quedan
@@ -263,6 +289,16 @@ def insert_rows(conn: sqlite3.Connection, table: str, columns: List[str], rows: 
         n += 1
     conn.commit()
     return n
+
+
+def delete_rows_by_id_chunked(conn: sqlite3.Connection, table: str, ids: Iterable[int], chunk: int = 500) -> int:
+    """`delete_rows_by_id` en tandas de `chunk` IDs (SQLite viejo limita a
+    999 parámetros por sentencia). Devuelve el total de filas borradas."""
+    ids = [i for i in ids if i is not None]
+    total = 0
+    for k in range(0, len(ids), chunk):
+        total += delete_rows_by_id(conn, table, ids[k:k + chunk])
+    return total
 
 
 def fetch_points(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:

@@ -78,6 +78,9 @@ un único botón "Agregar..." con un ítem por marca:
 - **Hi-Target** (CSV o el binario `.raw` propio del equipo).
 - **CHCNav/LandStar** (`.rw5`).
 - **Stonex** (`.PD`, en realidad una base de datos SQLite propia).
+- **SurPad** (`.rw5` y `.raw`).
+- **SourceLink** (`.csv` con las posiciones de los vibros; el *Unit ID* de cada disparo se sube como *Surveyor*).
+- **Inova** (`.xls` de los vibros: el COG de cada VP, con la altura de antena editable en la columna HI; los vibros del VP se suben como *Surveyor*).
 
 Para cada punto, cuando el formato lo trae, se aprovechan satélites
 usados, PDOP/HDOP/VDOP, duración de la ocupación, calidad de la
@@ -136,6 +139,9 @@ de filas seleccionadas, y se puede exportar a **Shapefile**, **GeoPackage**,
 | Hi-Target | `.csv` / `.raw` | `hitarget_parser.py` / `hitarget_raw_parser.py` |
 | CHCNav / LandStar | `.rw5` | `chcnav_parser.py` |
 | Stonex | `.PD` (SQLite) | `stonex_parser.py` |
+| SurPad | `.rw5` / `.raw` | `chcnav_parser.py` / `surpad_parser.py` |
+| SourceLink (vibros) | `.csv` | `sourcelink_parser.py` |
+| Inova (vibros, COG) | `.xls` | `inova_parser.py` (+ `_xlrd/`, xlrd BSD incluido) |
 
 Los cuatro se reconstruyeron por ingeniería inversa, verificando cada
 campo contra archivos reales y, cuando estuvo disponible, contra bases
@@ -202,6 +208,14 @@ compatibilidad con el software de origen.
 - `chcnav_parser.py` — lector del `.rw5` de CHCNav/LandStar.
 - `stonex_parser.py` — lector de la base de datos SQLite (`.PD`) de
   Stonex.
+- `surpad_parser.py` — lector del `.raw` de SurPad (y despachador `.rw5`/`.raw`).
+- `sourcelink_parser.py` — lector del CSV de SourceLink (posiciones de vibros).
+- `tabla_fija.py` — `QTableWidget` con columnas fijas a la izquierda (previsualización de campo).
+- `ui_widgets.py` — widgets propios de la interfaz: interruptor (`ToggleSwitch`), bloque desplegable (`AcordeonSeccion`), lista compacta, etiqueta con texto resumido (`EtiquetaElidida`) y pestañas que toman el alto de la activa (`PestanasAltoActual`).
+- `shared_project.py` — modo compartido opcional (bloqueo de un solo editor, copia local y publicación atómica).
+- `punto_nombre.py` — Station (value)/Línea/Estaca derivados del nombre del punto.
+- `inova_parser.py` — lector del `.xls` de Inova (algoritmo de la macro
+  `ExtraerCOG_GPSeismic`); usa la copia de xlrd de `_xlrd/` (licencia BSD).
 - `db_schema.py` — esquema SQLite (POSTPLOT/PREPLOT/TableDescriptions/
   COMPARACION/ProjectSettings), funciones de inserción/consulta, el
   editor de consultas de sólo lectura y el guardado de ajustes del
@@ -284,3 +298,32 @@ de nunca adivinar un valor sin poder comprobarlo contra un dato real.
 
 - Repositorio: https://github.com/topoedw05-dot/gnsseismic
 - Reportar un problema: https://github.com/topoedw05-dot/gnsseismic/issues
+
+
+## Proyecto compartido (opcional)
+
+Para que varias oficinas (por ejemplo la oficina de campo y Buenos Aires)
+vean o procesen el mismo proyecto a través de una carpeta sincronizada
+(Google Drive para escritorio u otra), en la pestaña **Proyecto** use
+*Compartir este proyecto...* (o responda que sí al crear uno nuevo). Es
+opcional: un proyecto no compartido funciona exactamente como siempre.
+
+- **Un solo editor a la vez.** Quien abre primero edita; el resto abre el
+  proyecto en **solo lectura** (con un aviso rojo en las pestañas que
+  escriben) y puede ver el avance. Un lector puede *Tomar el control* si el
+  editor terminó o quedó colgado; el anterior pasa a solo lectura y sus
+  cambios no publicados se guardan como respaldo en su computador.
+- **Copia local + publicación.** El editor trabaja sobre una copia local y
+  el plugin **publica** la base completa en la carpeta compartida (reemplazo
+  atómico) después de cada cambio, cada minuto si hubo cambios, al cerrar y
+  con *Publicar ahora*. Los lectores siempre reciben una versión completa
+  (la última publicada) y la renuevan con *Actualizar*.
+- **Archivos de campo, mapas, preplot:** viven en la misma carpeta del
+  proyecto y se abren con las rutas de la unidad de Drive como cualquier
+  archivo.
+- Junto a la base se crean `<base>.sqlite.shared.json` (marca de proyecto
+  compartido) y `<base>.sqlite.lock.json` (quién edita). No los borre a
+  mano salvo que nadie esté editando. El bloqueo es un aviso: Drive tarda en
+  sincronizar y en campo puede no haber internet, así que dos personas
+  pueden verse libres durante unos instantes; el plugin lo detecta en el
+  siguiente latido (cada minuto).

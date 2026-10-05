@@ -58,6 +58,8 @@ se re-renderizan -- ver `_render_counts_label`/`_render_preplot_label`).
 
 import os
 import csv
+import functools
+import inspect
 import json
 import math
 import re
@@ -69,10 +71,10 @@ from qgis.PyQt.QtCore import Qt, QMetaType, QSettings, QTimer
 from qgis.PyQt.QtGui import QColor, QBrush
 from qgis.PyQt.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QWidget,
-    QLabel, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox,
+    QLabel, QPushButton, QLineEdit, QListWidget, QListWidgetItem, QFileDialog, QMessageBox,
     QPlainTextEdit, QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QTableWidget,
     QTableWidgetItem, QGroupBox, QRadioButton, QButtonGroup, QAbstractItemView,
-    QHeaderView, QStackedWidget, QInputDialog, QScrollArea, QFrame, QMenu, QSizePolicy,
+    QHeaderView, QStackedWidget, QInputDialog, QScrollArea, QFrame, QMenu, QSizePolicy, QToolButton, QStyle,
 )
 
 # QAction vive en QtWidgets en PyQt5 (QGIS 3) pero se movió a QtGui en
@@ -87,7 +89,7 @@ from qgis.core import (
     QgsProject, QgsVectorLayer, QgsRasterLayer, QgsField, QgsFeature, QgsGeometry,
     QgsPointXY, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsVectorFileWriter, QgsCategorizedSymbolRenderer, QgsRendererCategory,
-    QgsMarkerSymbol, QgsLineSymbol, QgsSingleSymbolRenderer, QgsWkbTypes,
+    QgsMarkerSymbol, QgsLineSymbol, QgsSingleSymbolRenderer, QgsWkbTypes, QgsApplication,
 )
 
 try:
@@ -115,6 +117,12 @@ from . import hitarget_parser
 from . import hitarget_raw_parser
 from . import chcnav_parser
 from . import surpad_parser
+from . import sourcelink_parser
+from . import inova_parser
+from . import punto_nombre
+from . import shared_project
+from .tabla_fija import TablaColumnasFijas
+from .ui_widgets import AcordeonSeccion, EtiquetaElidida, ListaCompacta, PestanasAltoActual, ToggleSwitch
 from . import stonex_parser
 from . import csv_matcher
 from . import preplot_generator
@@ -123,6 +131,40 @@ from . import geoid_utils
 from . import ggf_reader
 from . import qld_reader
 from . import i18n
+
+
+def _escritura(silencioso=False):
+    """Decorador para los métodos que ESCRIBEN en la base del proyecto:
+    en un proyecto compartido abierto en SOLO LECTURA no se ejecutan (con
+    `silencioso=True` salen sin avisar; para guardados automáticos) y, en
+    uno donde esta ventana es el EDITOR, programan una publicación a la
+    carpeta compartida al terminar. Fuera del modo compartido no hacen
+    nada distinto. Descarta los argumentos que `clicked` etc. pasan de más
+    (PyQt los entrega según la firma visible del método)."""
+    def deco(fn):
+        params = list(inspect.signature(fn).parameters.values())[1:]
+        acepta_var = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        max_pos = len([
+            p for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ])
+
+        @functools.wraps(fn)
+        def envoltura(self, *args, **kwargs):
+            if not acepta_var:
+                args = args[:max_pos]
+            sh = getattr(self, "_shared", None)
+            if sh is not None and sh.mode == shared_project.MODE_VIEWER:
+                if not silencioso:
+                    QMessageBox.information(self, self.t("shared_ro_title"), self.t("shared_ro_blocked_body"))
+                return None
+            resultado = fn(self, *args, **kwargs)
+            sh = getattr(self, "_shared", None)
+            if sh is not None and sh.mode == shared_project.MODE_EDITOR:
+                QTimer.singleShot(1500, self._publicar_si_cambio)
+            return resultado
+        return envoltura
+    return deco
 
 
 def _valor_enum(clase, nombre, subespacio=None):
@@ -192,6 +234,75 @@ MSG_CANCEL = _valor_enum(QMessageBox, "Cancel", "StandardButton")
 # "Guardar consulta..." en la sección Base de Datos, que ofrece
 # "Sobrescribir"/"Guardar como nueva" además del Cancelar estándar).
 MSG_ROLE_ACTION = _valor_enum(QMessageBox, "ActionRole", "ButtonRole")
+MSG_ROLE_REJECT = _valor_enum(QMessageBox, "RejectRole", "ButtonRole")
+
+# Estilo del botón "Subir"/"Subir/Retirar" de "Importar datos de campo":
+# verde mientras no se ha subido nada en este proyecto (acción segura de
+# avance), rojo cuando ya hay una subida que se puede retirar (ver
+# `_actualizar_boton_subir`).
+# Botón "Subir" = acción principal (CTA) de "Importar datos de campo"
+# (rediseño v2.63.0): ancho completo (lo da el layout), esquinas
+# ligeramente redondeadas y color llamativo con buen contraste (blanco
+# sobre #2e7d32 / #c62828, ratio > 5:1).
+ESTILO_BTN_SUBIR_VERDE = (
+    "QPushButton { background-color: #2e7d32; color: white; font-weight: bold; font-size: 14px;"
+    " border: none; border-radius: 6px; padding: 10px 16px; }"
+    "QPushButton:hover { background-color: #388e3c; }"
+    "QPushButton:pressed { background-color: #1b5e20; }"
+    "QPushButton:disabled { background-color: #9e9e9e; color: #eeeeee; }"
+)
+ESTILO_BTN_SUBIR_ROJO = (
+    "QPushButton { background-color: #c62828; color: white; font-weight: bold; font-size: 14px;"
+    " border: none; border-radius: 6px; padding: 10px 16px; }"
+    "QPushButton:hover { background-color: #d32f2f; }"
+    "QPushButton:pressed { background-color: #8e0000; }"
+    "QPushButton:disabled { background-color: #9e9e9e; color: #eeeeee; }"
+)
+
+# Rediseño v2.63.0 de "Importar datos de campo": aspecto de tarjeta (borde
+# fino redondeado con colores de la PALETA del tema, así sirve en claro y
+# en oscuro), botones iconográficos, barra de acciones compacta y rótulos
+# tenues.
+ESTILO_TARJETAS = (
+    "QGroupBox#card { border: 1px solid palette(mid); border-radius: 8px; margin-top: 12px; padding-top: 10px; }"
+    "QGroupBox#card::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 5px; }"
+)
+ESTILO_BTN_ICONO = (
+    "QPushButton { font-size: 16px; font-weight: bold; padding: 2px 8px; border: 1px solid palette(mid);"
+    " border-radius: 5px; }"
+    "QPushButton:hover { background: palette(midlight); }"
+    "QPushButton::menu-indicator { subcontrol-position: right center; subcontrol-origin: padding; right: 4px; }"
+)
+ESTILO_BTN_BARRA = (
+    "QToolButton { padding: 3px 9px; border: 1px solid palette(mid); border-radius: 4px; }"
+    "QToolButton:hover { background: palette(midlight); }"
+)
+ESTILO_BTN_ENLACE = (
+    "QPushButton { border: none; text-align: left; padding: 2px 0px; color: palette(link); }"
+    "QPushButton:hover { text-decoration: underline; }"
+)
+ESTILO_ROTULO_TENUE = "color: gray;"
+ESTILO_SUBTITULO = "font-weight: bold;"
+# Botón de acción principal "Aplicar configuración" (pestaña Proyecto).
+ESTILO_BTN_PRIMARIO = (
+    "QPushButton { background-color: #1565c0; color: white; font-weight: bold; border: none;"
+    " border-radius: 6px; padding: 7px 18px; }"
+    "QPushButton:hover { background-color: #1976d2; }"
+    "QPushButton:pressed { background-color: #0d47a1; }"
+    "QPushButton:disabled { background-color: #9e9e9e; color: #eeeeee; }"
+)
+
+
+def _estilo_badge(color_hex):
+    """Estilo de un "badge" (píldora de color) de la pestaña Proyecto:
+    borde y fondo translúcido del color dado, texto del color del tema
+    (legible en claro y en oscuro)."""
+    c = color_hex.lstrip("#")
+    r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    return (
+        f"QLabel {{ border: 1px solid {color_hex}; border-radius: 10px; padding: 2px 10px;"
+        f" background-color: rgba({r}, {g}, {b}, 45); font-weight: bold; }}"
+    )
 
 # Forma del marco de un QFrame/QScrollArea (usado para que el
 # contenido de cada `_SectionWindow` vaya dentro de un scroll area sin
@@ -794,6 +905,30 @@ def _survey_mode_key_valor(status_texto) -> "tuple[str, str]":
     return "survey_mode_autonomo", "1"
 
 
+def _inova_modo_key_valor(calidad) -> "tuple[str, str]":
+    """Survey Mode de un VP de Inova a partir de sus tipos de fix GNSS
+    ("RTK Fix", "RTK Fix, DGPS Fix"...; un VP junta las lecturas de varios
+    vibros). Se toma el PEOR de los tipos presentes: sólo "RTK Fix" ->
+    Phase/3, algún "Float" -> RTK Float/4, cualquier otro (p.ej. "DGPS
+    Fix", que es diferencial de código, no RTK) -> Autónomo/1 -- por eso no
+    sirve `_survey_mode_key_valor` tal cual, que trata todo "fix" como
+    Phase."""
+    tokens = [t.strip().lower() for t in (calidad or "").split(",") if t.strip()]
+    if not tokens:
+        return "survey_mode_autonomo", "1"
+    peor = "survey_mode_phase"
+    for t in tokens:
+        if "float" in t or "flot" in t:
+            nivel = "survey_mode_float"
+        elif "rtk" in t and ("fix" in t or "fij" in t):
+            nivel = "survey_mode_phase"
+        else:
+            nivel = "survey_mode_autonomo"
+        if nivel == "survey_mode_autonomo" or (nivel == "survey_mode_float" and peor == "survey_mode_phase"):
+            peor = nivel
+    return peor, {"survey_mode_phase": "3", "survey_mode_float": "4", "survey_mode_autonomo": "1"}[peor]
+
+
 # Texto fijo en INGLÉS para el valor por defecto de Survey_Mode_Text --
 # a diferencia de casi cualquier otro texto de la previsualización (que
 # sí sigue el idioma de la interfaz vía `self.t()`), éste es un
@@ -1045,7 +1180,8 @@ PREVIEW_COL_DELTA_N = 63
 PREVIEW_COL_DIST2D = 64
 PREVIEW_COL_ESTADO = 65
 PREVIEW_COL_ARCHIVO = 66
-PREVIEW_N_COLS = 67
+PREVIEW_COL_SURVEYOR = 67  # columna extra (v2.62.11): Surveyor que se subirá (Unit ID en SourceLink, o el escrito junto al archivo)
+PREVIEW_N_COLS = 68
 
 # Columnas de la tabla de previsualización de "Importar preplot externo"
 # (`_build_tab_preplot`, grupo agregado en la v2.6.0): puntos leídos de
@@ -1327,6 +1463,7 @@ class GNSSeismicController(QWidget):
         ("survey_mode_text", "col_survey_mode_text", "text"),
         ("archivo", "col_file", "text"),
         ("estado", "col_status", "text"),
+        ("surveyor", "col_surveyor", "text"),
         ("incluir", "col_include", "num"),
         ("subido", "lbl_filtro_wizard_col_subido", "num"),
     ]
@@ -1376,6 +1513,8 @@ class GNSSeismicController(QWidget):
         ("menu_add_chcnav", "agregar_chcnav"),
         ("menu_add_stonex", "agregar_stonex"),
         ("menu_add_surpad", "agregar_surpad"),
+        ("menu_add_sourcelink", "agregar_sourcelink"),
+        ("menu_add_inova", "agregar_inova"),
     )
 
     def __init__(self, iface, project: QgsProject, parent=None):
@@ -1397,8 +1536,36 @@ class GNSSeismicController(QWidget):
         # así que se reutiliza el mismo `chcnav_parser.py` tal cual --
         # ver `agregar_surpad()` -- y por eso esta lista guarda también
         # objetos `chcnav_parser.ChcnavFile`, no un tipo propio.
+        self.sourcelink_files = []  # list[sourcelink_parser.SourceLinkFile] (CSV de SourceLink con las posiciones de los vibros)
+        # Modo compartido opcional (ver `shared_project.py`): None si el
+        # proyecto abierto no es compartido; si lo es, la `SharedSession`
+        # (editor con copia local + publicación, o lector de solo lectura).
+        self._shared = None
+        self._banners_solo_lectura = []  # QLabel rojos que avisan "SOLO LECTURA" en las pestañas que escriben
+        self._shared_timer = QTimer(self)
+        self._shared_timer.setInterval(60 * 1000)
+        self._shared_timer.timeout.connect(self._on_shared_tick)
+        app_qt = QApplication.instance()
+        if app_qt is not None:
+            # Al cerrar QGIS: publica los cambios pendientes y libera el bloqueo.
+            app_qt.aboutToQuit.connect(self._al_cerrar_qgis)
+        self.inova_files = []  # list[inova_parser.InovaFile] (.xls de Inova: COG de cada VP, ver agregar_inova)
         self.surpad_files = []  # list[chcnav_parser.ChcnavFile] (parseados con chcnav_parser, ver agregar_surpad)
-        self._campo_file_refs = []  # [(origen, path), ...] alineado con self.lst_dc, origen: "DC"|"HITARGET"|"CHCNAV"|"STONEX"|"SURPAD"
+        self._campo_file_refs = []  # [(origen, path), ...] alineado con self.lst_dc, origen: "DC"|"HITARGET"|"CHCNAV"|"STONEX"|"SURPAD"|"SOURCELINK"|"INOVA"
+        # Topógrafo (Surveyor) escrito junto a cada archivo de campo cargado:
+        # {(origen, path): texto}. Se llena desde el QLineEdit de cada fila
+        # de `lst_dc` (ver `_agregar_item_campo`) y se usa al subir a
+        # POSTPLOT para llenar la columna Surveyor de los puntos de ESE archivo.
+        self._surveyor_por_archivo = {}
+        # Subidas a POSTPLOT hechas desde "Importar datos de campo" que
+        # todavía se pueden retirar, la más reciente al final: cada lote es
+        # {"ids": [ID de POSTPLOT insertados], "keys": [(origen, path,
+        # line_no) de las filas de la previsualización], "layer_id": id de
+        # la capa de QGIS creada, o None}. Vacía = botón verde "Subir";
+        # con algún lote = botón rojo "Subir/Retirar" (ver
+        # `_actualizar_boton_subir`). Se vacía al cambiar de proyecto: los
+        # ID sólo valen para la base de datos donde se insertaron.
+        self._lotes_subidos = []
         self.design_points = []  # list[dict] con las coordenadas ya transformadas del "diseño" (CSV o PREPLOT)
         self._origen_diseno_label = ""  # texto para la columna Origen_Diseno al subir COMPARACION
         self.match_result = None
@@ -1413,6 +1580,7 @@ class GNSSeismicController(QWidget):
         self._survey_codigos_fuente = set()  # códigos Descriptor que clasifican como línea fuente
         self._survey_codigos_receptora = set()  # ídem, línea receptora
         self._preplot_ext_preview = []  # list[dict], puntos de preplot externo (SPS/CSV/.qld/capa QGIS) aún no subidos a PREPLOT
+        self._preplot_gen_layer = None  # capa de memoria temporal del preplot generado a mano (ver generar_preplot)
         self._provisional_preplot_ext_layer = None  # capa de memoria temporal con self._preplot_ext_preview (ver _actualizar_capa_provisional_preplot_ext)
         self.query_columns = []  # columnas de la última consulta ejecutada en la pestaña 5
         self.query_rows = []  # filas (dict) de la última consulta ejecutada en la pestaña 5
@@ -1514,12 +1682,18 @@ class GNSSeismicController(QWidget):
         resto de los controles hacia arriba."""
         fila = QHBoxLayout()
         fila.addStretch(1)
+        btn_ayuda = self._crear_boton_ayuda(help_keys, titulo_key)
+        fila.addWidget(btn_ayuda)
+        v.insertLayout(0, fila)
+        return btn_ayuda
+
+    def _crear_boton_ayuda(self, help_keys, titulo_key):
+        """El botón "?" en sí (sin colocarlo): lo usan `_agregar_boton_ayuda`
+        y la esquina de la barra de pestañas de Preplot Sísmico."""
         btn_ayuda = QPushButton("?")
         btn_ayuda.setFixedSize(24, 24)
         self._reg(btn_ayuda, "btn_help_tooltip", kind="tooltip")
         btn_ayuda.clicked.connect(lambda: self._mostrar_ayuda(titulo_key, help_keys))
-        fila.addWidget(btn_ayuda)
-        v.insertLayout(0, fila)
         return btn_ayuda
 
     def _mostrar_ayuda(self, titulo_key, help_keys):
@@ -1560,6 +1734,8 @@ class GNSSeismicController(QWidget):
         self._fill_descriptor_combo(self.cb_linea_descriptor)
         self._fill_query_preset_combo(keep_selection=True)
         self._fill_export_format_combo(keep_selection=True)
+        self._actualizar_visibilidad_opciones_sps()
+        self._render_query_resumen()
         self._fill_export_preview_format_combo(keep_selection=True)
         self._fill_bulk_campo_combo(keep_selection=True)
         self._fill_preview_filter_preset_combo(keep_selection=True)
@@ -1571,11 +1747,21 @@ class GNSSeismicController(QWidget):
 
         self._retranslate_tabla_preview()
 
+        if hasattr(self, "btn_subir_dc"):
+            self._actualizar_boton_subir()
+
         if hasattr(self, "btn_toggle_log_importar"):
             self._actualizar_texto_boton_log_importar()
 
+        self._actualizar_resumen_acordeones()
+        if hasattr(self, "btn_sql_dev"):
+            self._actualizar_texto_boton_sql_dev()
+            self._actualizar_lbl_filtro_actual()
+
         if hasattr(self, "btn_toggle_config_proyecto"):
             self._actualizar_texto_boton_config_proyecto()
+
+        self._actualizar_ui_compartido()
 
         if hasattr(self, "lbl_filtro_preview_resumen") and self._preview_filtro_ids is not None:
             self.lbl_filtro_preview_resumen.setText(
@@ -1591,6 +1777,11 @@ class GNSSeismicController(QWidget):
         if self._preplot_ext_preview:
             self._sync_preplot_ext_desde_tabla()
             self._llenar_tabla_preplot_ext()
+        self._render_preplot_ext_resumen()
+        self._retraducir_pestanas_preplot()
+        self.tbl_preplot_gen_preview.setHorizontalHeaderLabels(self._gen_preview_headers())
+        self._llenar_tabla_preplot_gen()
+        self._actualizar_texto_boton_log_preplot()
 
         self._render_counts_label()
         self._render_preplot_label()
@@ -1620,6 +1811,8 @@ class GNSSeismicController(QWidget):
             self._ajustar_tamano_ventana(win, content)
             self._windows[key] = (win, title_key)
 
+    _ANCHO_MAX_RECUADRO = 520  # px: tope del ancho que se le exige a cada recuadro de una fila de 2
+
     def _ajustar_tamano_ventana(self, win, content):
         """Dimensiona la ventana de una sección a lo que su propio
         contenido necesita, en vez de un tamaño fijo grande igual para
@@ -1642,9 +1835,29 @@ class GNSSeismicController(QWidget):
         accesible con la barra de desplazamiento del QScrollArea en vez
         de tapar la pantalla. Sigue siendo una ventana redimensionable a
         mano."""
-        deseado = content.sizeHint()
+        deseado = content.sizeHint().expandedTo(content.minimumSizeHint())
         ancho = deseado.width() + 24  # margen para el borde/barra del scroll area
         alto = deseado.height() + 24
+        # Causa del "primer arranque desordenado" (importar datos de campo):
+        # los recuadros que se acomodan de a 2 por fila usan
+        # `QSizePolicy.Ignored` (para repartir 50/50), y un widget Ignored
+        # NO aporta su ancho al `sizeHint` del contenido; el sizeHint
+        # quedaba entonces mucho más angosto que lo que necesitan dos
+        # recuadros lado a lado y la ventana abría con botones y etiquetas
+        # recortados ("gregar", "impia", "Co"...). Se calcula el ancho
+        # que de verdad necesitan (el recuadro Ignored más ancho, tope
+        # `_ANCHO_MAX_RECUADRO`, x2 + márgenes) y se usa como ancho de
+        # apertura y como ancho MÍNIMO del contenido: si el usuario achica
+        # la ventana, aparece la barra de desplazamiento horizontal del
+        # QScrollArea en vez de aplastar los botones.
+        ancho_recuadro = 0
+        for g in content.findChildren(QGroupBox):
+            if g.sizePolicy().horizontalPolicy() == SIZE_POLICY_IGNORED:
+                ancho_recuadro = max(ancho_recuadro, min(g.sizeHint().width(), self._ANCHO_MAX_RECUADRO))
+        if ancho_recuadro:
+            ancho_min = 2 * ancho_recuadro + 80
+            content.setMinimumWidth(ancho_min)
+            ancho = max(ancho, ancho_min + 24)
         try:
             screen = win.screen() if hasattr(win, "screen") else None
             if screen is None:
@@ -1672,6 +1885,9 @@ class GNSSeismicController(QWidget):
     def close_all_windows(self):
         """Cierra las cinco ventanas de sección (llamado al descargar el
         plugin, `GNSSeismicPlugin.unload()`)."""
+        # Un proyecto compartido abierto publica lo pendiente y libera su
+        # bloqueo al descargar/recargar el plugin.
+        self._cerrar_sesion_compartida(cerrar_conexion=True)
         for win, _title_key in self._windows.values():
             win.close()
 
@@ -1679,47 +1895,105 @@ class GNSSeismicController(QWidget):
     def _build_tab_proyecto(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        self._agregar_boton_ayuda(v, ["crs_saved_note", "note_factor_escala", "geoid_info", "note_survey_3d"], "tab1_title")
+        v.setSpacing(8)
 
-        grp_db = self._reg(QGroupBox(), "grp_db", kind="title")
-        form = QVBoxLayout(grp_db)
-        self.lbl_db_path = QLineEdit()
-        self.lbl_db_path.setReadOnly(True)
+        # -- Barra superior (rediseño v2.64.0): gestión del proyecto en una
+        # fila compacta. Izquierda: botones de texto corto con glifo
+        # (Nuevo / Abrir / Mis proyectos / Actualizar). Derecha: "badges" de
+        # colores con el balance del proyecto (POSTPLOT / PREPLOT /
+        # COMPARACION) y el botón de ayuda "?". Debajo, en texto chico, la
+        # ruta de la base SQLite resumida (completa en el tooltip).
+        fila_barra = QHBoxLayout()
+        fila_barra.setSpacing(4)
+        for key_texto, key_tip, handler in (
+            ("tb_proj_new", "btn_new_project", self.crear_proyecto),
+            ("tb_proj_open", "btn_open_project", self.abrir_proyecto),
+            ("tb_proj_switch", "btn_switch_project", self.abrir_selector_proyectos),
+            ("tb_proj_refresh", "btn_refresh_counts", self.actualizar_conteos),
+        ):
+            tb = QToolButton()
+            tb.setStyleSheet(ESTILO_BTN_BARRA)
+            self._reg(tb, key_texto)
+            self._reg(tb, key_tip, kind="tooltip")
+            tb.clicked.connect(lambda _checked=False, h=handler: h())
+            fila_barra.addWidget(tb)
+        fila_barra.addStretch(1)
+        self.badge_postplot = QLabel()
+        self.badge_preplot = QLabel()
+        self.badge_comparacion = QLabel()
+        for badge, color, tip in (
+            (self.badge_postplot, "#2e7d32", "tip_badge_post"),
+            (self.badge_preplot, "#1565c0", "tip_badge_pre"),
+            (self.badge_comparacion, "#ef6c00", "tip_badge_comp"),
+        ):
+            badge.setStyleSheet(_estilo_badge(color))
+            self._reg(badge, tip, kind="tooltip")
+            fila_barra.addWidget(badge)
+        btn_ayuda = QPushButton("?")
+        btn_ayuda.setFixedSize(24, 24)
+        self._reg(btn_ayuda, "btn_help_tooltip", kind="tooltip")
+        btn_ayuda.clicked.connect(
+            lambda: self._mostrar_ayuda("tab1_title", ["crs_saved_note", "note_factor_escala", "geoid_info", "note_survey_3d"])
+        )
+        fila_barra.addWidget(btn_ayuda)
+        v.addLayout(fila_barra)
+
+        self.lbl_db_path = EtiquetaElidida()
+        self.lbl_db_path.setStyleSheet(ESTILO_ROTULO_TENUE + " font-size: 11px;")
         self._reg(self.lbl_db_path, "db_path_placeholder", kind="placeholder")
-        form.addWidget(self.lbl_db_path)
+        v.addWidget(self.lbl_db_path)
 
-        fila_botones = QHBoxLayout()
-        btn_nuevo = self._reg(QPushButton(), "btn_new_project")
-        btn_nuevo.clicked.connect(self.crear_proyecto)
-        btn_abrir = self._reg(QPushButton(), "btn_open_project")
-        btn_abrir.clicked.connect(self.abrir_proyecto)
-        btn_cambiar = self._reg(QPushButton(), "btn_switch_project")
-        btn_cambiar.clicked.connect(self.abrir_selector_proyectos)
-        btn_refrescar = self._reg(QPushButton(), "btn_refresh_counts")
-        btn_refrescar.clicked.connect(self.actualizar_conteos)
-        fila_botones.addWidget(btn_nuevo)
-        fila_botones.addWidget(btn_abrir)
-        fila_botones.addWidget(btn_cambiar)
-        fila_botones.addWidget(btn_refrescar)
-        form.addLayout(fila_botones)
+        # Línea de error de los conteos (normalmente oculta).
+        self.lbl_conteos = QLabel("")
+        self.lbl_conteos.setWordWrap(True)
+        self.lbl_conteos.setStyleSheet("color: #c62828;")
+        self.lbl_conteos.setVisible(False)
+        v.addWidget(self.lbl_conteos)
+        self._render_counts_label()
 
-        self.lbl_conteos = QLabel(self.t("lbl_counts_empty"))
-        form.addWidget(self.lbl_conteos)
-        v.addWidget(grp_db)
+        # -- Proyecto compartido (OPCIONAL): varias oficinas ven/editan el
+        # mismo proyecto a través de una carpeta sincronizada o de red --
+        # ver `shared_project.py`. Un solo editor a la vez; los demás en
+        # solo lectura. Ahora es un interruptor (On/Off) con un ícono (i)
+        # cuyo tooltip trae la explicación que antes ocupaba un bloque de
+        # texto fijo; los botones de acción sólo aparecen según el rol.
+        grp_shared = self._reg(QGroupBox(), "grp_shared", kind="title")
+        grp_shared.setObjectName("card")
+        v_shared = QVBoxLayout(grp_shared)
+        fila_toggle = QHBoxLayout()
+        self.chk_shared_enable = self._reg(ToggleSwitch(), "chk_shared_enable")
+        self.chk_shared_enable.clicked.connect(self._on_toggle_compartir)
+        fila_toggle.addWidget(self.chk_shared_enable)
+        fila_toggle.addWidget(self._crear_icono_info("shared_info_tip"))
+        fila_toggle.addStretch(1)
+        self.btn_shared_publish = self._reg(QPushButton(), "btn_shared_publish")
+        self.btn_shared_publish.clicked.connect(self.publicar_ahora)
+        self.btn_shared_release = self._reg(QPushButton(), "btn_shared_release")
+        self.btn_shared_release.clicked.connect(self.dejar_de_editar)
+        self.btn_shared_takeover = self._reg(QPushButton(), "btn_shared_takeover")
+        self.btn_shared_takeover.clicked.connect(self.tomar_control)
+        self.btn_shared_refresh = self._reg(QPushButton(), "btn_shared_refresh")
+        self.btn_shared_refresh.clicked.connect(self.actualizar_lector)
+        for b in (self.btn_shared_publish, self.btn_shared_release,
+                  self.btn_shared_takeover, self.btn_shared_refresh):
+            fila_toggle.addWidget(b)
+        v_shared.addLayout(fila_toggle)
+        self.lbl_shared_estado = QLabel()
+        self.lbl_shared_estado.setWordWrap(True)
+        v_shared.addWidget(self.lbl_shared_estado)
+        v.addWidget(grp_shared)
+        self._actualizar_ui_compartido()
 
         # Pedido explícito del usuario (con una captura de la pestaña
-        # "Proyecto"): dejar siempre visible sólo el recuadro de arriba
-        # ("Base de datos del proyecto" -- ruta, los cuatro botones y los
-        # conteos) y, debajo, un botón que despliega/oculta todo lo
-        # demás (CRS, factor de escala, tipo de levantamiento, geoide) --
-        # ese bloque sólo hace falta ver al configurar un proyecto nuevo
-        # o corregir uno existente, no todo el tiempo. Mismo mecanismo ya
-        # usado para el "Registro" de "Importar datos de campo" (v2.34.0):
-        # un botón con forma de interruptor (`setCheckable`) muestra/oculta
-        # un contenedor -- acá el contenedor agrupa los cuatro recuadros
-        # en vez de uno solo. Oculto por defecto; `crear_proyecto()` lo
-        # despliega solo al terminar de crear un proyecto nuevo, que es
-        # justo cuando hace falta revisarlo/completarlo.
+        # "Proyecto"): dejar siempre visible sólo la parte de arriba y,
+        # debajo, un botón que despliega/oculta todo lo demás (CRS, factor
+        # de escala, tipo de levantamiento, geoide) -- ese bloque sólo
+        # hace falta ver al configurar un proyecto nuevo o corregir uno
+        # existente. Mismo mecanismo que el "Registro" de "Importar datos
+        # de campo": un botón con forma de interruptor (`setCheckable`)
+        # muestra/oculta un contenedor. Oculto por defecto;
+        # `crear_proyecto()` lo despliega solo al terminar de crear un
+        # proyecto nuevo, que es justo cuando hace falta revisarlo.
         self.btn_toggle_config_proyecto = QPushButton()
         self.btn_toggle_config_proyecto.setCheckable(True)
         self.btn_toggle_config_proyecto.setChecked(False)
@@ -1734,86 +2008,134 @@ class GNSSeismicController(QWidget):
         self._actualizar_texto_boton_config_proyecto()
         v.addWidget(self.config_proyecto_widget)
 
-        grp_crs = self._reg(QGroupBox(), "grp_crs", kind="title")
-        v_crs = QVBoxLayout(grp_crs)
+        # -- Dos columnas simétricas e independientes ---------------------
+        # Izquierda: Configuración Geográfica (CRS + Geoide).
+        # Derecha: Factor de Escala + Tipo de Levantamiento.
+        grp_geo = self._reg(QGroupBox(), "grp_config_geografica", kind="title")
+        grp_geo.setObjectName("card")
+        v_geo = QVBoxLayout(grp_geo)
+
+        lbl_crs = self._reg(QLabel(), "lbl_crs_title")
+        lbl_crs.setStyleSheet(ESTILO_SUBTITULO)
+        self._reg(lbl_crs, "grp_crs", kind="tooltip")
+        v_geo.addWidget(lbl_crs)
         if QgsProjectionSelectionWidget is not None:
             self.crs_widget = QgsProjectionSelectionWidget()
             self.crs_widget.setCrs(QgsCoordinateReferenceSystem("EPSG:9377"))  # MAGNA-SIRGAS / Origen-Nacional (Colombia)
-            v_crs.addWidget(self.crs_widget)
+            v_geo.addWidget(self.crs_widget)
             # El CRS se guarda con el proyecto (ProjectSettings) y se
             # recupera solo al abrir/crear/cambiar de proyecto -- ver
             # `_guardar_crs_actual`/`_cargar_crs_guardado`. A propósito NO
-            # se guarda automáticamente con cada cambio del selector
-            # (`crsChanged`): este widget es único y compartido por todas
-            # las secciones, así que si se guardara en cada cambio, tocarlo
-            # para PREPARAR un proyecto nuevo (crear uno para Argentina
-            # mientras el de Colombia sigue abierto, por ejemplo) pisaría
-            # sin darse cuenta el CRS ya guardado del proyecto que seguía
-            # abierto -- se probó en vivo y pasaba exactamente eso. Por
-            # eso corregir el CRS de un proyecto YA abierto es una acción
-            # explícita con este botón, y el que sí es automático es sólo
-            # el de "Nuevo proyecto..." (usa el CRS que esté elegido en
-            # ese momento para el proyecto que se está creando).
-            btn_guardar_crs = self._reg(QPushButton(), "btn_save_crs")
-            btn_guardar_crs.clicked.connect(self.guardar_crs_proyecto_actual)
-            v_crs.addWidget(btn_guardar_crs)
-            # El texto explicativo que iba aquí ("crs_saved_note") se
-            # movió al botón de ayuda ("?") de arriba de la pestaña --
-            # ver `_agregar_boton_ayuda`.
+            # se guarda con cada cambio del selector (`crsChanged`): este
+            # widget es único y compartido por todas las secciones, así
+            # que guardar en cada cambio, tocándolo para PREPARAR un
+            # proyecto nuevo (crear uno para Argentina mientras el de
+            # Colombia sigue abierto), pisaría sin darse cuenta el CRS ya
+            # guardado del proyecto abierto -- se probó en vivo y pasaba
+            # exactamente eso. Se guarda con el botón general "Aplicar
+            # configuración" del fondo (y automáticamente en "Nuevo
+            # proyecto...", que usa el CRS elegido en ese momento).
         else:
             self.crs_widget = None
-            v_crs.addWidget(self._reg(QLabel(), "crs_widget_unavailable"))
-        v_config_proyecto.addWidget(grp_crs)
+            v_geo.addWidget(self._reg(QLabel(), "crs_widget_unavailable"))
 
-        grp_factor_escala = self._reg(QGroupBox(), "grp_factor_escala", kind="title")
-        v_factor_escala = QVBoxLayout(grp_factor_escala)
-        form_factor_escala = QFormLayout()
+        v_geo.addSpacing(10)
+        lbl_geoide = self._reg(QLabel(), "grp_geoid")
+        lbl_geoide.setStyleSheet(ESTILO_SUBTITULO)
+        v_geo.addWidget(lbl_geoide)
+        # Campo de texto de sólo lectura con acciones DENTRO del campo:
+        # carpeta (explorar el archivo del geoide: .grd, .gtx, .ggf...) y,
+        # sólo si hay uno asignado, una "x" para quitarlo.
+        self.lbl_geoid_path = QLineEdit()
+        self.lbl_geoid_path.setReadOnly(True)
+        self._reg(self.lbl_geoid_path, "geoid_path_placeholder", kind="placeholder")
+        trailing = _valor_enum(QLineEdit, "TrailingPosition", "ActionPosition")
+        estilo_app = QApplication.style()
+        act_explorar = QAction(self.lbl_geoid_path)
+        act_explorar.setIcon(estilo_app.standardIcon(_valor_enum(QStyle, "SP_DirOpenIcon", "StandardPixmap")))
+        self._reg(act_explorar, "btn_load_geoid", kind="tooltip")
+        act_explorar.triggered.connect(lambda _c=False: self.cargar_geoide())
+        self.lbl_geoid_path.addAction(act_explorar, trailing)
+        self._act_geoide_quitar = QAction(self.lbl_geoid_path)
+        self._act_geoide_quitar.setIcon(estilo_app.standardIcon(_valor_enum(QStyle, "SP_TitleBarCloseButton", "StandardPixmap")))
+        self._reg(self._act_geoide_quitar, "btn_clear_geoid", kind="tooltip")
+        self._act_geoide_quitar.triggered.connect(lambda _c=False: self.quitar_geoide())
+        self.lbl_geoid_path.addAction(self._act_geoide_quitar, trailing)
+        self._act_geoide_quitar.setVisible(False)
+        self.lbl_geoid_path.textChanged.connect(lambda t: self._act_geoide_quitar.setVisible(bool(t)))
+        v_geo.addWidget(self.lbl_geoid_path)
+        v_geo.addStretch(1)
 
+        grp_fs = self._reg(QGroupBox(), "grp_config_factor_survey", kind="title")
+        grp_fs.setObjectName("card")
+        v_fs = QVBoxLayout(grp_fs)
+
+        lbl_factor = self._reg(QLabel(), "lbl_factor_title")
+        lbl_factor.setStyleSheet(ESTILO_SUBTITULO)
+        self._reg(lbl_factor, "grp_factor_escala", kind="tooltip")
+        v_fs.addWidget(lbl_factor)
+
+        # Latitud / Longitud / Altura: tres campos pequeños en UNA fila.
+        grid_factor = QGridLayout()
+        grid_factor.setHorizontalSpacing(6)
+        grid_factor.setVerticalSpacing(1)
+        for col in range(3):
+            grid_factor.setColumnStretch(col, 1)
+        for col, key in enumerate(("fe_cap_lat", "fe_cap_lon", "fe_cap_alt")):
+            cap = self._reg(QLabel(), key)
+            cap.setStyleSheet(ESTILO_ROTULO_TENUE)
+            grid_factor.addWidget(cap, 0, col)
         self.spin_factor_escala_lat = QDoubleSpinBox()
         self.spin_factor_escala_lat.setDecimals(8)
         self.spin_factor_escala_lat.setRange(-90.0, 90.0)
-        self._form_row(form_factor_escala, "lbl_factor_escala_lat", self.spin_factor_escala_lat)
-
+        grid_factor.addWidget(self.spin_factor_escala_lat, 1, 0)
         self.spin_factor_escala_lon = QDoubleSpinBox()
         self.spin_factor_escala_lon.setDecimals(8)
         self.spin_factor_escala_lon.setRange(-180.0, 180.0)
-        self._form_row(form_factor_escala, "lbl_factor_escala_lon", self.spin_factor_escala_lon)
-
+        grid_factor.addWidget(self.spin_factor_escala_lon, 1, 1)
         self.spin_factor_escala_altura = QDoubleSpinBox()
         self.spin_factor_escala_altura.setDecimals(2)
         self.spin_factor_escala_altura.setRange(-1000.0, 9000.0)
         self.spin_factor_escala_altura.setSuffix(" m")
         self._reg(self.spin_factor_escala_altura, "tip_factor_escala_altura", kind="tooltip")
-        self._form_row(form_factor_escala, "lbl_factor_escala_altura", self.spin_factor_escala_altura)
+        grid_factor.addWidget(self.spin_factor_escala_altura, 1, 2)
+        v_fs.addLayout(grid_factor)
 
-        v_factor_escala.addLayout(form_factor_escala)
-
-        btn_click_mapa_factor_escala = self._reg(QPushButton(), "btn_click_mapa_factor_escala")
-        btn_click_mapa_factor_escala.clicked.connect(self._iniciar_click_mapa_factor_escala)
-        v_factor_escala.addWidget(btn_click_mapa_factor_escala)
+        # Barra de acciones compacta justo debajo de los números.
+        fila_factor = QHBoxLayout()
+        fila_factor.setSpacing(4)
+        for key_texto, key_tip, handler in (
+            ("tb_fe_map", "btn_click_mapa_factor_escala", self._iniciar_click_mapa_factor_escala),
+            ("tb_fe_calc", "btn_calcular_factor_escala", self._calcular_factor_escala_proyecto),
+            ("tb_fe_save", "btn_save_factor_escala", self.guardar_factor_escala_proyecto),
+        ):
+            tb = QToolButton()
+            tb.setStyleSheet(ESTILO_BTN_BARRA)
+            self._reg(tb, key_texto)
+            self._reg(tb, key_tip, kind="tooltip")
+            tb.clicked.connect(lambda _checked=False, h=handler: h())
+            fila_factor.addWidget(tb)
+        fila_factor.addStretch(1)
+        v_fs.addLayout(fila_factor)
 
         self.lbl_factor_escala_status = QLabel("")
         self.lbl_factor_escala_status.setWordWrap(True)
-        v_factor_escala.addWidget(self.lbl_factor_escala_status)
-
-        btn_calcular_factor_escala = self._reg(QPushButton(), "btn_calcular_factor_escala")
-        btn_calcular_factor_escala.clicked.connect(self._calcular_factor_escala_proyecto)
-        v_factor_escala.addWidget(btn_calcular_factor_escala)
-
+        v_fs.addWidget(self.lbl_factor_escala_status)
         self.lbl_factor_escala_resultado = QLabel(self.t("status_factor_escala_sin_calcular"))
         self.lbl_factor_escala_resultado.setWordWrap(True)
-        v_factor_escala.addWidget(self.lbl_factor_escala_resultado)
+        v_fs.addWidget(self.lbl_factor_escala_resultado)
 
-        btn_guardar_factor_escala = self._reg(QPushButton(), "btn_save_factor_escala")
-        btn_guardar_factor_escala.clicked.connect(self.guardar_factor_escala_proyecto)
-        v_factor_escala.addWidget(btn_guardar_factor_escala)
-        # El texto explicativo que iba aquí ("note_factor_escala") se
-        # movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
-        v_config_proyecto.addWidget(grp_factor_escala)
+        linea = QFrame()
+        linea.setFrameShape(_valor_enum(QFrame, "HLine", "Shape"))
+        linea.setFrameShadow(_valor_enum(QFrame, "Sunken", "Shadow"))
+        v_fs.addWidget(linea)
 
-        grp_survey = self._reg(QGroupBox(), "grp_survey_type", kind="title")
-        v_survey = QVBoxLayout(grp_survey)
+        # Tipo de levantamiento (2D/3D) al final de la columna. Si es 3D se
+        # muestran además los azimutes y códigos Descriptor de línea
+        # fuente/receptora (`_actualizar_visibilidad_campos_survey_3d`).
+        lbl_survey = self._reg(QLabel(), "grp_survey_type")
+        lbl_survey.setStyleSheet(ESTILO_SUBTITULO)
+        v_fs.addWidget(lbl_survey)
         form_survey = QFormLayout()
         self.cb_survey_type = QComboBox()
         self.cb_survey_type.addItem(self.t("opt_survey_2d"), "2D")
@@ -1842,35 +2164,85 @@ class GNSSeismicController(QWidget):
         self.txt_survey_cod_receptora.setText(_SURVEY_CODIGOS_RECEPTORA_DEFECTO)
         self._reg(self.txt_survey_cod_receptora, "tip_survey_cod_placeholder", kind="placeholder")
         self._lbl_survey_cod_receptora = self._form_row(form_survey, "lbl_survey_cod_receptora", self.txt_survey_cod_receptora)
-
-        v_survey.addLayout(form_survey)
-        btn_guardar_survey = self._reg(QPushButton(), "btn_save_survey_type")
-        btn_guardar_survey.clicked.connect(self.guardar_config_survey_actual)
-        v_survey.addWidget(btn_guardar_survey)
-        v_config_proyecto.addWidget(grp_survey)
+        v_fs.addLayout(form_survey)
+        v_fs.addStretch(1)
         self._actualizar_visibilidad_campos_survey_3d()
 
-        grp_geoid = self._reg(QGroupBox(), "grp_geoid", kind="title")
-        v_geoid = QVBoxLayout(grp_geoid)
-        fila_geoid = QHBoxLayout()
-        self.lbl_geoid_path = QLineEdit()
-        self.lbl_geoid_path.setReadOnly(True)
-        self._reg(self.lbl_geoid_path, "geoid_path_placeholder", kind="placeholder")
-        btn_geoid_cargar = self._reg(QPushButton(), "btn_load_geoid")
-        btn_geoid_cargar.clicked.connect(self.cargar_geoide)
-        btn_geoid_quitar = self._reg(QPushButton(), "btn_clear_geoid")
-        btn_geoid_quitar.clicked.connect(self.quitar_geoide)
-        fila_geoid.addWidget(self.lbl_geoid_path)
-        fila_geoid.addWidget(btn_geoid_cargar)
-        fila_geoid.addWidget(btn_geoid_quitar)
-        v_geoid.addLayout(fila_geoid)
-        # El texto explicativo que iba aquí ("geoid_info") se movió al
-        # botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
-        v_config_proyecto.addWidget(grp_geoid)
+        for g in (grp_geo, grp_fs):
+            g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
+        grid_config = QGridLayout()
+        grid_config.setColumnStretch(0, 1)
+        grid_config.setColumnStretch(1, 1)
+        grid_config.setHorizontalSpacing(10)
+        grid_config.addWidget(grp_geo, 0, 0)
+        grid_config.addWidget(grp_fs, 0, 1)
+        v_config_proyecto.addLayout(grid_config)
 
+        # Botón general "Aplicar configuración" al fondo: guarda con ESTE
+        # proyecto el CRS y el tipo de levantamiento elegidos (reemplaza a
+        # los botones "Guardar CRS..." y "Guardar configuración de
+        # levantamiento"). El geoide se guarda al elegirlo y el factor de
+        # escala con su propio botón "Guardar factor".
+        fila_aplicar = QHBoxLayout()
+        fila_aplicar.addStretch(1)
+        self.btn_aplicar_config = self._reg(QPushButton(), "btn_aplicar_config")
+        self._reg(self.btn_aplicar_config, "tip_btn_aplicar_config", kind="tooltip")
+        self.btn_aplicar_config.setStyleSheet(ESTILO_BTN_PRIMARIO)
+        self.btn_aplicar_config.setMinimumWidth(180)
+        self.btn_aplicar_config.clicked.connect(self.aplicar_configuracion_proyecto)
+        fila_aplicar.addWidget(self.btn_aplicar_config)
+        v_config_proyecto.addLayout(fila_aplicar)
+
+        w.setStyleSheet(ESTILO_TARJETAS)
         v.addStretch()
         return w
+
+    @staticmethod
+    def _tooltip_html(texto, ancho=360):
+        """Tooltip con ajuste de línea (Qt sólo ajusta los de texto rico)."""
+        return f"<table width='{ancho}'><tr><td>{texto}</td></tr></table>"
+
+    def _crear_icono_info(self, tip_key):
+        """Ícono (i) redondo cuyo tooltip (clave `tip_key`, ya en HTML)
+        reemplaza a un bloque de texto explicativo de espacio fijo."""
+        lbl = QLabel("i")
+        lbl.setFixedSize(18, 18)
+        lbl.setAlignment(_valor_enum(Qt, "AlignCenter", "AlignmentFlag"))
+        lbl.setStyleSheet(
+            "QLabel { border: 1px solid palette(mid); border-radius: 9px; font-weight: bold; font-style: italic; }"
+        )
+        lbl.setCursor(_valor_enum(Qt, "WhatsThisCursor", "CursorShape"))
+        self._reg(lbl, tip_key, kind="tooltip")
+        return lbl
+
+    def _on_toggle_compartir(self, marcado):
+        """Interruptor "Habilitar proyecto compartido en la nube"."""
+        if marcado:
+            self.compartir_proyecto_actual()
+        else:
+            self.dejar_de_compartir()
+        # Si el usuario canceló el diálogo (o el modo no cambió), el
+        # interruptor vuelve a reflejar el estado real.
+        self._actualizar_ui_compartido()
+
+    @_escritura()
+    def aplicar_configuracion_proyecto(self):
+        """Botón general "Aplicar configuración": valida el tipo de
+        levantamiento (si es 3D, azimutes y códigos completos) y, sólo si
+        todo está bien, guarda con ESTE proyecto el CRS de trabajo y el
+        tipo de levantamiento elegidos."""
+        if not self._require_project():
+            return
+        ok, msg = self._guardar_config_survey_actual()
+        if not ok:
+            QMessageBox.warning(self, self.t("err_title"), msg)
+            return
+        self._guardar_crs_actual()
+        crs = self.crs_widget.crs() if self.crs_widget is not None else self.crs_wgs84
+        QMessageBox.information(
+            self, self.t("ok_title"),
+            self.t("msg_config_applied", crs=crs.authid() or crs.description(), tipo=self.cb_survey_type.currentData()),
+        )
 
     def _actualizar_texto_boton_config_proyecto(self):
         key = "btn_config_proyecto_hide" if self.btn_toggle_config_proyecto.isChecked() else "btn_config_proyecto_show"
@@ -1933,21 +2305,7 @@ class GNSSeismicController(QWidget):
     # justamente el escenario de riesgo que motivó esto: trabajar con un
     # proyecto en Colombia y otro en Argentina y subir datos sin darse
     # cuenta de que quedó el CRS que no correspondía.
-    def guardar_crs_proyecto_actual(self):
-        """Botón "Guardar CRS de este proyecto": guarda a propósito, y
-        sólo cuando el usuario lo pide explícitamente, el CRS
-        actualmente seleccionado como el de ESTE proyecto. No está
-        conectado a `crsChanged` -- ver la nota en `_build_tab_proyecto`
-        sobre por qué guardar en cada cambio del selector es peligroso
-        (se probó en vivo: pisaba el CRS de un proyecto que seguía
-        abierto mientras se preparaba el selector para crear uno
-        nuevo)."""
-        if not self._require_project():
-            return
-        self._guardar_crs_actual()
-        crs = self.crs_widget.crs() if self.crs_widget is not None else self.crs_wgs84
-        QMessageBox.information(self, self.t("ok_title"), self.t("msg_crs_saved", crs=crs.authid() or crs.description()))
-
+    @_escritura(silencioso=True)
     def _guardar_crs_actual(self):
         if self.conn is None or self.crs_widget is None:
             return
@@ -2064,6 +2422,7 @@ class GNSSeismicController(QWidget):
             )
         )
 
+    @_escritura()
     def guardar_factor_escala_proyecto(self):
         """Botón "Guardar factor de este proyecto": persiste (tabla
         ProjectSettings, igual que el CRS/la config de levantamiento) el
@@ -2157,20 +2516,7 @@ class GNSSeismicController(QWidget):
         ):
             widget.setVisible(es_3d)
 
-    def guardar_config_survey_actual(self):
-        """Botón "Guardar configuración de levantamiento": guarda
-        explícitamente, sólo cuando el usuario lo pide, el tipo de
-        levantamiento (2D/3D) y -- si es 3D -- los azimutes y códigos
-        Descriptor de línea fuente/receptora actualmente elegidos como los
-        de ESTE proyecto."""
-        if not self._require_project():
-            return
-        ok, msg = self._guardar_config_survey_actual()
-        if not ok:
-            QMessageBox.warning(self, self.t("err_title"), msg)
-            return
-        QMessageBox.information(self, self.t("ok_title"), self.t("msg_survey_config_saved"))
-
+    @_escritura(silencioso=True)
     def _guardar_config_survey_actual(self):
         """Valida y persiste (ProjectSettings) los widgets de la pestaña
         Proyecto. Devuelve (True, "") si se guardó, o (False, mensaje) si
@@ -2262,7 +2608,14 @@ class GNSSeismicController(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle(self.t("dlg_survey_type_title"))
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(self.t("dlg_survey_type_intro")))
+        # El texto de introducción es largo: con ajuste de línea y un ancho
+        # acotado el diálogo cabe en pantalla (sin esto se estiraba a una
+        # sola línea de más de 2000 px).
+        lbl_intro = QLabel(self.t("dlg_survey_type_intro"))
+        lbl_intro.setWordWrap(True)
+        v.addWidget(lbl_intro)
+        dlg.setMinimumWidth(520)
+        dlg.setMaximumWidth(760)
 
         form = QFormLayout()
         cb_tipo = QComboBox()
@@ -2369,11 +2722,18 @@ class GNSSeismicController(QWidget):
         return (az, "preplot") if az is not None else (None, None)
 
     def _render_counts_label(self):
+        """Actualiza los tres "badges" de la barra superior de la pestaña
+        Proyecto (POSTPLOT / PREPLOT / COMPARACION)."""
+        if not hasattr(self, "badge_postplot"):
+            return
         if self._last_counts is None:
-            self.lbl_conteos.setText(self.t("lbl_counts_empty"))
+            n_post = n_pre = n_comp = "-"
         else:
             n_post, n_pre, n_comp = self._last_counts
-            self.lbl_conteos.setText(self.t("lbl_counts", post=n_post, pre=n_pre, comp=n_comp))
+        self.badge_postplot.setText(self.t("badge_post", n=n_post))
+        self.badge_preplot.setText(self.t("badge_pre", n=n_pre))
+        self.badge_comparacion.setText(self.t("badge_comp", n=n_comp))
+        self.lbl_conteos.setVisible(False)
 
     def _render_preplot_label(self):
         """Re-renderiza el resumen de la pestaña 2 (Preplot Sísmico) en el
@@ -2386,10 +2746,18 @@ class GNSSeismicController(QWidget):
         if not hasattr(self, "lbl_preplot_resumen"):
             return
         if self._last_preplot_summary is None:
-            self.lbl_preplot_resumen.setText(self.t("lbl_preplot_empty"))
+            texto = f"<span style='color:#f9a825'>&#9888;</span>&nbsp;{self.t('pp_estado_vacio')}"
+            hay_puntos = False
         else:
             n, modo_key = self._last_preplot_summary
-            self.lbl_preplot_resumen.setText(self.t("lbl_preplot_summary", n=n, modo=self.t(modo_key)))
+            texto = f"<span style='color:#2e9d4a'>&#9679;</span>&nbsp;{self.t('pp_estado_listo', n=n, modo=self.t(modo_key))}"
+            hay_puntos = True
+        self.lbl_preplot_resumen.setText(texto)
+        # "Limpiar" y "Guardar" sólo tienen sentido con puntos generados.
+        for nombre in ("tb_pp_limpiar", "tb_pp_guardar"):
+            btn = getattr(self, nombre, None)
+            if btn is not None:
+                btn.setEnabled(hay_puntos)
 
     def crear_proyecto(self):
         """Crea un proyecto nuevo como una CARPETA (con el nombre que
@@ -2461,9 +2829,14 @@ class GNSSeismicController(QWidget):
                 db_schema.register_table_description(
                     conn, tabla, creation_purpose="Proyecto creado con GNSSeismic (QGIS)"
                 )
+            # Si había un proyecto compartido abierto, se cierra su sesión
+            # (el editor publica y libera el bloqueo) antes de pasar al nuevo.
+            self._cerrar_sesion_compartida(cerrar_conexion=True)
             self.conn = conn
+            self._resetear_lotes_subidos()
             self.db_path = db_path
             self.lbl_db_path.setText(db_path)
+            self._actualizar_ui_compartido()
             self.geoid_layer = None
             self.geoid_ggf = None
             self.geoid_path = None
@@ -2506,6 +2879,11 @@ class GNSSeismicController(QWidget):
                     crs=crs_creado.authid() or crs_creado.description(),
                 ),
             )
+            # Opcional: ¿el proyecto será compartido (carpeta sincronizada)?
+            if QMessageBox.question(
+                self, self.t("shared_new_title"), self.t("shared_new_body", path=carpeta_proyecto),
+            ) in (MSG_YES,):
+                self.compartir_proyecto_actual(silencioso=True)
         except Exception as e:
             QMessageBox.critical(self, self.t("err_title"), self.t("err_project_create", error=e, trace=traceback.format_exc()))
 
@@ -2531,15 +2909,35 @@ class GNSSeismicController(QWidget):
             # tablas esperadas (por si la base es de una versión anterior
             # del plugin, o la plantilla original sin la tabla COMPARACION
             # o ProjectSettings).
-            conn = db_schema.create_project_db(path, overwrite=False)
+            # Si hay una sesión compartida abierta del MISMO proyecto, se
+            # cierra primero (publica y libera el bloqueo) para que la
+            # nueva apertura no se vea a sí misma como "otro editor".
+            vieja_sesion, vieja_conn = self._shared, self.conn
+            if vieja_sesion is not None and os.path.normcase(os.path.abspath(vieja_sesion.db_path)) == os.path.normcase(os.path.abspath(path)):
+                self._cerrar_sesion_compartida(cerrar_conexion=True)
+                vieja_sesion = None
+            nueva_sesion = None
+            if shared_project.is_shared(path):
+                conn, nueva_sesion = self._preparar_conexion_compartida(path)
+                if conn is None:
+                    return False  # el usuario canceló
+            else:
+                conn = db_schema.create_project_db(path, overwrite=False)
+            # La nueva base ya está lista: recién ahora se cierra la sesión
+            # compartida anterior (si era de otro proyecto).
+            if vieja_sesion is not None:
+                self._cerrar_sesion_compartida(cerrar_conexion=True)
+            elif vieja_conn is not None and self._shared is None and vieja_conn is not conn:
+                pass  # proyecto anterior no compartido: se deja abierto como siempre
             self.conn = conn
+            self._shared = nueva_sesion
+            if nueva_sesion is not None:
+                self._shared_timer.start()
+            self._resetear_lotes_subidos()
             self.db_path = path
             self.lbl_db_path.setText(path)
-            self._cargar_geoide_guardado()
-            self._cargar_crs_guardado()
-            self._cargar_factor_escala_guardado()
-            self._cargar_config_survey_guardada()
-            self.actualizar_conteos()
+            self._cargar_estado_proyecto()
+            self._actualizar_ui_compartido()
             carpeta_raiz = self._detectar_raiz_proyecto(path)
             nombre = os.path.basename(carpeta_raiz) or os.path.splitext(os.path.basename(path))[0]
             self._register_known_project(nombre, carpeta_raiz, path)
@@ -2547,6 +2945,414 @@ class GNSSeismicController(QWidget):
         except Exception as e:
             QMessageBox.critical(self, self.t("err_title"), self.t("err_project_open", error=e))
             return False
+
+    # -- Proyecto compartido (OPCIONAL) --------------------------------------
+    # Ver `shared_project.py` para las reglas: un solo editor (copia local +
+    # publicación atómica a la carpeta sincronizada), el resto en solo
+    # lectura sobre una copia local de la última versión publicada.
+
+    def _shared_local_root(self) -> str:
+        try:
+            base = QgsApplication.qgisSettingsDirPath()
+        except Exception:  # sin QGIS completo: carpeta del usuario
+            base = os.path.expanduser("~")
+        return os.path.join(base, "gnsseismic_shared")
+
+    def _crear_banner_solo_lectura(self):
+        lbl = QLabel()
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; padding: 4px;")
+        lbl.setVisible(False)
+        self._banners_solo_lectura.append(lbl)
+        return lbl
+
+    def _texto_estado_compartido(self) -> str:
+        sh = self._shared
+        if sh is None:
+            if self.conn is None or not self.db_path:
+                return self.t("shared_status_no_project")
+            return self.t("shared_status_not_shared")
+        if sh.mode == shared_project.MODE_EDITOR:
+            texto = self.t("shared_status_editor", fecha=sh.last_publish_text or "-")
+        else:
+            lock = sh.lock_seen
+            if lock is None:
+                editor = self.t("shared_viewer_nobody")
+            else:
+                minutos = int(lock.age_seconds() // 60) if lock.age_seconds() != float("inf") else -1
+                editor = self.t(
+                    "shared_viewer_editing", quien=lock.who(),
+                    desde=shared_project.iso_to_local_text(lock.since),
+                    min=minutos if minutos >= 0 else "?",
+                    caida=(self.t("shared_viewer_stale") if lock.is_stale() else ""),
+                )
+            texto = self.t("shared_status_viewer", editor=editor, fecha=sh.last_publish_text or "-")
+            if sh.remote_newer:
+                texto += " " + self.t("shared_viewer_newer")
+        if sh.last_error:
+            texto += " " + self.t("shared_last_error", error=sh.last_error)
+        return texto
+
+    def _actualizar_ui_compartido(self):
+        if not hasattr(self, "lbl_shared_estado"):
+            return
+        sh = self._shared
+        editor = sh is not None and sh.mode == shared_project.MODE_EDITOR
+        lector = sh is not None and sh.mode == shared_project.MODE_VIEWER
+        # Interruptor "Habilitar proyecto compartido": refleja el estado
+        # real; sólo se puede mover con un proyecto abierto y, si ya es
+        # compartido, sólo siendo el editor (el lector no puede desactivarlo).
+        self.chk_shared_enable.blockSignals(True)
+        self.chk_shared_enable.setChecked(sh is not None)
+        self.chk_shared_enable.blockSignals(False)
+        self.chk_shared_enable.setEnabled(editor or (sh is None and self.conn is not None and bool(self.db_path)))
+        for b in (self.btn_shared_publish, self.btn_shared_release):
+            b.setVisible(editor)
+        for b in (self.btn_shared_takeover, self.btn_shared_refresh):
+            b.setVisible(lector)
+        # El texto de estado sólo se muestra cuando el proyecto ES
+        # compartido (la explicación general va en el tooltip del ícono (i)).
+        self.lbl_shared_estado.setVisible(sh is not None)
+        self.lbl_shared_estado.setText(self._texto_estado_compartido() if sh is not None else "")
+        for lbl in self._banners_solo_lectura:
+            lbl.setVisible(lector)
+            if lector:
+                lbl.setText(self.t("shared_banner_readonly"))
+
+    def _guardar_estado_sesion_compartida_en_log(self, clave, **kw):
+        if hasattr(self, "log_importar"):
+            self.log_importar.appendPlainText(self.t(clave, **kw))
+
+    def _abrir_como_editor(self, path, force=False):
+        """Toma el bloqueo, deja una copia local de la versión publicada
+        (o recupera la copia local de una sesión anterior con cambios sin
+        publicar) y abre la conexión sobre ella. (conn, sesión) o
+        (None, None)."""
+        raiz = self._shared_local_root()
+        local = shared_project.editor_copy_path(raiz, path)
+        sid = shared_project.new_session_id()
+        ok, otro = shared_project.acquire_lock(path, sid, force=force)
+        if not ok:
+            QMessageBox.warning(self, self.t("shared_open_title"), self.t("shared_lock_race_body", quien=otro.who() if otro else "?"))
+            return None, None
+        recuperar = False
+        sig = shared_project.published_signature(path)
+        if os.path.exists(local) and sig is not None:
+            try:
+                if os.stat(local).st_mtime_ns > sig[0] + 2_000_000_000:
+                    resp = QMessageBox.question(self, self.t("shared_recover_title"), self.t("shared_recover_body"))
+                    recuperar = resp in (MSG_YES,)
+            except OSError:
+                recuperar = False
+        try:
+            if not recuperar:
+                shared_project.snapshot_published(path, local)
+            conn = db_schema.create_project_db(local, overwrite=False)
+        except Exception:
+            shared_project.release_lock(path, sid)
+            raise
+        ses = shared_project.SharedSession(
+            db_path=path, mode=shared_project.MODE_EDITOR, session_id=sid, local_path=local,
+            baseline_changes=(-1 if recuperar else conn.total_changes), signature=sig,
+            last_publish_text=shared_project.published_mtime_text(path),
+        )
+        return conn, ses
+
+    def _abrir_como_lector(self, path):
+        """Copia local de la última versión publicada, abierta en solo
+        lectura (`query_only`: aunque algún camino de código intentara
+        escribir, SQLite lo rechaza)."""
+        raiz = self._shared_local_root()
+        view = shared_project.viewer_copy_path(raiz, path)
+        shared_project.snapshot_published(path, view)
+        conn = db_schema.create_project_db(view, overwrite=False)
+        conn.execute("PRAGMA query_only = ON")
+        ses = shared_project.SharedSession(
+            db_path=path, mode=shared_project.MODE_VIEWER, session_id="", local_path=view,
+            signature=shared_project.published_signature(path),
+            lock_seen=shared_project.read_lock(path),
+            last_publish_text=shared_project.published_mtime_text(path),
+        )
+        return conn, ses
+
+    def _preparar_conexion_compartida(self, path):
+        """Decide el modo al abrir un proyecto compartido: libre -> editor;
+        con editor activo -> pregunta (solo lectura / tomar el control /
+        cancelar). Devuelve (conn, sesión) o (None, None) si se cancela."""
+        lock = shared_project.read_lock(path)
+        if lock is None:
+            return self._abrir_como_editor(path)
+        minutos = int(lock.age_seconds() // 60) if lock.age_seconds() != float("inf") else -1
+        box = QMessageBox(self)
+        box.setWindowTitle(self.t("shared_open_title"))
+        box.setText(self.t(
+            "shared_open_body", quien=lock.who(),
+            desde=shared_project.iso_to_local_text(lock.since),
+            min=minutos if minutos >= 0 else "?",
+            caida=(self.t("shared_viewer_stale") if lock.is_stale() else ""),
+        ))
+        b_ro = box.addButton(self.t("btn_shared_open_ro"), MSG_ROLE_ACTION)
+        b_take = box.addButton(self.t("btn_shared_open_takeover"), MSG_ROLE_ACTION)
+        box.addButton(self.t("btn_cancel"), MSG_ROLE_REJECT)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_ro:
+            return self._abrir_como_lector(path)
+        if clicked is b_take:
+            return self._abrir_como_editor(path, force=True)
+        return None, None
+
+    def _publicar_sesion(self, manual=False) -> bool:
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_EDITOR or self.conn is None:
+            return False
+        try:
+            scratch = os.path.join(shared_project.work_dir(self._shared_local_root(), sh.db_path), "scratch")
+            shared_project.publish(self.conn, sh.db_path, scratch)
+            sh.baseline_changes = self.conn.total_changes
+            sh.signature = shared_project.published_signature(sh.db_path)
+            sh.last_publish_text = shared_project.published_mtime_text(sh.db_path)
+            sh.last_error = ""
+            ok = True
+        except Exception as e:  # Drive sin conexión, carpeta inaccesible, disco lleno...
+            sh.last_error = str(e)
+            ok = False
+            if manual:
+                QMessageBox.warning(self, self.t("shared_publish_error_title"), self.t("shared_publish_error_body", error=e))
+        self._actualizar_ui_compartido()
+        return ok
+
+    def _publicar_si_cambio(self):
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_EDITOR or self.conn is None:
+            return
+        if self.conn.total_changes != sh.baseline_changes:
+            self._publicar_sesion(manual=False)
+
+    def publicar_ahora(self):
+        if self._shared is not None and self._shared.mode == shared_project.MODE_EDITOR:
+            if self._publicar_sesion(manual=True):
+                QMessageBox.information(self, self.t("shared_publish_ok_title"), self.t("shared_publish_ok_body", fecha=self._shared.last_publish_text))
+
+    def _on_shared_tick(self):
+        sh = self._shared
+        if sh is None:
+            self._shared_timer.stop()
+            return
+        try:
+            if sh.mode == shared_project.MODE_EDITOR:
+                if not shared_project.renew_lock(sh.db_path, sh.session_id):
+                    self._perdio_control()
+                    return
+                self._publicar_si_cambio()
+            else:
+                sig = shared_project.published_signature(sh.db_path)
+                sh.remote_newer = sig is not None and sig != sh.signature
+                sh.lock_seen = shared_project.read_lock(sh.db_path)
+        except Exception as e:  # el latido nunca debe interrumpir el trabajo
+            sh.last_error = str(e)
+        self._actualizar_ui_compartido()
+
+    def _al_cerrar_qgis(self):
+        try:
+            self._cerrar_sesion_compartida()
+        except RuntimeError:
+            return  # widgets ya destruidos al salir: lo importante (publicar/liberar) ya se hizo
+
+    def _cerrar_sesion_compartida(self, cerrar_conexion=False):
+        """Termina la sesión compartida: el editor publica lo pendiente (si
+        no se puede, NO libera el bloqueo para no dejar a otro editar sobre
+        una versión vieja) y libera el bloqueo. Seguro de llamar siempre
+        (también al cerrar QGIS)."""
+        sh = self._shared
+        if sh is None:
+            return
+        self._shared_timer.stop()
+        publicado = True
+        if sh.mode == shared_project.MODE_EDITOR:
+            if self.conn is not None and (self.conn.total_changes != sh.baseline_changes):
+                publicado = self._publicar_sesion(manual=False)
+            if publicado:
+                shared_project.release_lock(sh.db_path, sh.session_id)
+        self._shared = None
+        if cerrar_conexion and self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception as e:  # ya cerrada
+                sh.last_error = str(e)
+        self._actualizar_ui_compartido()
+
+    def _cambiar_a_lector(self):
+        """Pasa la ventana actual del modo editor al de solo lectura sobre
+        la última versión publicada (tras `dejar_de_editar` o al perder el
+        control)."""
+        sh = self._shared
+        if sh is None:
+            return
+        path = sh.db_path
+        self._shared_timer.stop()
+        try:
+            self.conn.close()
+        except Exception as e:
+            sh.last_error = str(e)
+        conn, ses = self._abrir_como_lector(path)
+        self.conn, self._shared = conn, ses
+        self._resetear_lotes_subidos()
+        self._cargar_estado_proyecto()
+        self._shared_timer.start()
+        self._actualizar_ui_compartido()
+
+    def dejar_de_editar(self):
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_EDITOR:
+            return
+        if self.conn.total_changes != sh.baseline_changes and not self._publicar_sesion(manual=True):
+            return  # no se pudo publicar: se sigue editando, no se libera
+        shared_project.release_lock(sh.db_path, sh.session_id)
+        self._cambiar_a_lector()
+
+    def tomar_control(self):
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_VIEWER:
+            return
+        lock = shared_project.read_lock(sh.db_path)
+        if lock is not None:
+            resp = QMessageBox.question(
+                self, self.t("shared_takeover_title"),
+                self.t("shared_takeover_body", quien=lock.who(), caida=(self.t("shared_viewer_stale") if lock.is_stale() else "")),
+            )
+            if resp not in (MSG_YES,):
+                return
+        self._shared_timer.stop()
+        path = sh.db_path
+        try:
+            self.conn.close()
+        except Exception as e:
+            sh.last_error = str(e)
+        try:
+            conn, ses = self._abrir_como_editor(path, force=True)
+        except Exception as e:
+            QMessageBox.critical(self, self.t("err_title"), self.t("err_project_open", error=e))
+            conn, ses = None, None
+        if conn is None:  # no se pudo: se vuelve a la vista de solo lectura
+            conn, ses = self._abrir_como_lector(path)
+        self.conn, self._shared = conn, ses
+        self._resetear_lotes_subidos()
+        self._cargar_estado_proyecto()
+        self._shared_timer.start()
+        self._actualizar_ui_compartido()
+
+    def actualizar_lector(self):
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_VIEWER:
+            return
+        path = sh.db_path
+        self._shared_timer.stop()
+        try:
+            self.conn.close()
+        except Exception as e:
+            sh.last_error = str(e)
+        try:
+            conn, ses = self._abrir_como_lector(path)
+        except Exception as e:
+            QMessageBox.critical(self, self.t("err_title"), self.t("err_project_open", error=e))
+            conn = sqlite3.connect(sh.local_path)
+            conn.execute("PRAGMA query_only = ON")
+            ses = sh
+        self.conn, self._shared = conn, ses
+        self._cargar_estado_proyecto()
+        self._shared_timer.start()
+        self._actualizar_ui_compartido()
+
+    def _perdio_control(self):
+        """Otra persona tomó el control mientras esta ventana editaba: lo
+        publicado por la otra persona manda; los cambios locales sin
+        publicar se guardan como respaldo y la ventana pasa a solo
+        lectura."""
+        sh = self._shared
+        if sh is None:
+            return
+        respaldo = ""
+        try:
+            if self.conn.total_changes != sh.baseline_changes:
+                self.conn.commit()
+                carpeta = shared_project.work_dir(self._shared_local_root(), sh.db_path)
+                respaldo = os.path.join(carpeta, "respaldo_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".sqlite")
+                shared_project.copy_atomic(sh.local_path, respaldo)
+        except Exception as e:
+            sh.last_error = str(e)
+        self._cambiar_a_lector()
+        QMessageBox.warning(
+            self, self.t("shared_lost_title"),
+            self.t("shared_lost_body") + (("\n\n" + self.t("shared_lost_backup", path=respaldo)) if respaldo else ""),
+        )
+
+    def compartir_proyecto_actual(self, silencioso=False):
+        """Marca el proyecto abierto como compartido: crea el marcador, toma
+        el bloqueo y pasa a trabajar sobre una copia local con publicación
+        a la carpeta del proyecto (que debería estar dentro de una carpeta
+        sincronizada, p.ej. Google Drive para escritorio)."""
+        if not self._require_project():
+            return
+        if self._shared is not None:
+            return
+        if not silencioso:
+            resp = QMessageBox.question(
+                self, self.t("shared_enable_title"), self.t("shared_enable_body", path=self.db_path),
+            )
+            if resp not in (MSG_YES,):
+                return
+        path = self.db_path
+        try:
+            self.conn.commit()
+            self.conn.close()
+            shared_project.enable_shared(path)
+            conn, ses = self._abrir_como_editor(path)
+            if conn is None:
+                raise RuntimeError(self.t("shared_lock_race_body", quien="?"))
+        except Exception as e:
+            # se vuelve a abrir el proyecto como estaba (sin compartir)
+            shared_project.disable_shared(path)
+            self.conn = db_schema.create_project_db(path, overwrite=False)
+            QMessageBox.critical(self, self.t("err_title"), self.t("err_project_open", error=e))
+            return
+        self.conn, self._shared = conn, ses
+        self._shared_timer.start()
+        self._publicar_sesion(manual=False)  # deja publicada la versión actual
+        self._actualizar_ui_compartido()
+        self.actualizar_conteos()
+
+    def dejar_de_compartir(self):
+        sh = self._shared
+        if sh is None or sh.mode != shared_project.MODE_EDITOR:
+            return
+        resp = QMessageBox.question(self, self.t("shared_disable_title"), self.t("shared_disable_body"))
+        if resp not in (MSG_YES,):
+            return
+        if not self._publicar_sesion(manual=True):
+            return
+        path = sh.db_path
+        self._shared_timer.stop()
+        shared_project.release_lock(path, sh.session_id)
+        shared_project.disable_shared(path)
+        try:
+            self.conn.close()
+        except Exception as e:
+            sh.last_error = str(e)
+        self._shared = None
+        self.conn = db_schema.create_project_db(path, overwrite=False)
+        self._resetear_lotes_subidos()
+        self._actualizar_ui_compartido()
+        self.actualizar_conteos()
+
+    def _cargar_estado_proyecto(self):
+        """Recarga desde la base abierta lo que se muestra del proyecto
+        (geoide, CRS, factor de escala, tipo de levantamiento, conteos)."""
+        self._cargar_geoide_guardado()
+        self._cargar_crs_guardado()
+        self._cargar_factor_escala_guardado()
+        self._cargar_config_survey_guardada()
+        self.actualizar_conteos()
 
     def _detectar_raiz_proyecto(self, db_path: str) -> str:
         """Infiere la carpeta "raíz" del proyecto a partir de la ruta de
@@ -2723,7 +3529,9 @@ class GNSSeismicController(QWidget):
             self._render_counts_label()
         except Exception as e:
             self._last_counts = None
+            self._render_counts_label()
             self.lbl_conteos.setText(self.t("lbl_counts_error", error=e))
+            self.lbl_conteos.setVisible(True)
         # Repuebla el combo de columnas de "Buscar / Buscar y reemplazar"
         # (ver `_poblar_columnas_buscar_reemplazar`) cada vez que cambia
         # el proyecto abierto -- antes de la primera vez que se abre o
@@ -2765,6 +3573,7 @@ class GNSSeismicController(QWidget):
             layer.setCrs(self.crs_wgs84)
         self.geoid_layer = layer
 
+    @_escritura()
     def cargar_geoide(self):
         path, _ = QFileDialog.getOpenFileName(self, self.t("dlg_load_geoid_title"), "", self.t("filter_raster"))
         if not path:
@@ -2782,6 +3591,7 @@ class GNSSeismicController(QWidget):
             self.geoid_ggf = None
             QMessageBox.critical(self, self.t("err_title"), self.t("err_geoid_load", error=e))
 
+    @_escritura()
     def quitar_geoide(self):
         self.geoid_layer = None
         self.geoid_ggf = None
@@ -2874,146 +3684,532 @@ class GNSSeismicController(QWidget):
         return any(self._sample_geoid_undulation(lon, lat) is not None for lon, lat in puntos)
 
     # -- Sección: Preplot Sísmico ------------------------------------------
+    # -- Sección: Preplot Sísmico (rediseño v2.65.0) -----------------------
+    # Estructura: pestañas arriba (Generar manual / Importar SPS-QLD /
+    # Importar capa de QGIS) -- sólo se ve el contenido de la elegida --
+    # y, debajo, una tabla de datos que ocupa todo el alto sobrante
+    # (`stack_preplot_inferior`: en la pestaña 1 muestra los puntos
+    # generados; en las pestañas 2 y 3 la previsualización de lo importado,
+    # con el botón verde "Subir seleccionados a PREPLOT" fijo abajo a la
+    # derecha).
+    _MAX_FILAS_TABLA_PREPLOT_GEN = 2000  # filas que se dibujan en la tabla de puntos generados (todos se guardan)
+
     def _build_tab_preplot(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        self._agregar_boton_ayuda(v, ["preplot_intro", "note_preplot_external"], "tab2_title")
+        v.setSpacing(6)
+        v.addWidget(self._crear_banner_solo_lectura())
 
-        grp_modo = self._reg(QGroupBox(), "grp_preplot_mode", kind="title")
-        h_modo = QHBoxLayout(grp_modo)
+        self.tabs_preplot = PestanasAltoActual()
+        # Que las pestañas NO se estiren a lo alto: sólo lo que necesite la
+        # pestaña activa; todo el alto sobrante es para la tabla de abajo.
+        self.tabs_preplot.setSizePolicy(
+            _valor_enum(QSizePolicy, "Preferred", "Policy"), _valor_enum(QSizePolicy, "Maximum", "Policy")
+        )
+        self.tabs_preplot.addTab(self._build_preplot_pestana_generar(), "")
+        self.tabs_preplot.addTab(self._build_preplot_pestana_archivo(), "")
+        self.tabs_preplot.addTab(self._build_preplot_pestana_capa(), "")
+        # El "?" de ayuda va en la esquina de la barra de pestañas (así no
+        # gasta una fila propia).
+        self.tabs_preplot.setCornerWidget(
+            self._crear_boton_ayuda(["preplot_intro", "note_preplot_external"], "tab2_title"),
+            _valor_enum(Qt, "TopRightCorner", "Corner"),
+        )
+        v.addWidget(self.tabs_preplot)
+
+        v.addWidget(self._build_preplot_inferior(), 1)
+
+        w.setStyleSheet(ESTILO_TARJETAS)
+
+        self._retraducir_pestanas_preplot()
+        self.tabs_preplot.currentChanged.connect(self._on_pestana_preplot_cambiada)
+        self._on_pestana_preplot_cambiada(0)
+        self._actualizar_modo_preplot()
+        self._render_preplot_label()
+        self._render_preplot_ext_resumen()
+        return w
+
+    # -- helpers de maquetación ------------------------------------------
+    def _tarjeta_card(self, title_key):
+        grp = self._reg(QGroupBox(), title_key, kind="title")
+        grp.setObjectName("card")
+        v = QVBoxLayout(grp)
+        v.setSpacing(6)
+        return grp, v
+
+    @staticmethod
+    def _bloque_filas(columnas=3):
+        """Cuadrícula de `columnas` columnas de igual ancho para filas de
+        campos numéricos compactos."""
+        cont = QWidget()
+        g = QGridLayout(cont)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(10)
+        g.setVerticalSpacing(6)
+        for c in range(columnas):
+            g.setColumnStretch(c, 1)
+        return cont, g
+
+    def _celda_campo(self, grid, fila, col, key, widget, span=1):
+        """Un campo con su rótulo ARRIBA (tenue), en la celda (fila, col)."""
+        cont = QWidget()
+        lay = QVBoxLayout(cont)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        lbl = self._reg(QLabel(), key)
+        lbl.setStyleSheet(ESTILO_ROTULO_TENUE)
+        lay.addWidget(lbl)
+        lay.addWidget(widget)
+        grid.addWidget(cont, fila, col, 1, span)
+        return cont
+
+    @staticmethod
+    def _spin_entero(minimo, maximo, valor):
+        sp = QSpinBox()
+        sp.setRange(minimo, maximo)
+        sp.setValue(valor)
+        return sp
+
+    @staticmethod
+    def _spin_decimal(minimo, maximo, valor=None):
+        sp = QDoubleSpinBox()
+        sp.setRange(minimo, maximo)
+        sp.setDecimals(3)
+        if valor is not None:
+            sp.setValue(valor)
+        return sp
+
+    @staticmethod
+    def _combo_campo():
+        """Combo que no obliga a ensanchar la ventana según el nombre de
+        campo más largo de la capa."""
+        cb = QComboBox()
+        cb.setSizeAdjustPolicy(_valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy"))
+        cb.setMinimumContentsLength(10)
+        return cb
+
+    def _boton_barra(self, key, tip_key, slot):
+        b = QToolButton()
+        b.setToolButtonStyle(_valor_enum(Qt, "ToolButtonTextOnly", "ToolButtonStyle"))
+        b.setStyleSheet(ESTILO_BTN_BARRA)
+        self._reg(b, key)
+        self._reg(b, tip_key, kind="tooltip")
+        b.clicked.connect(slot)
+        return b
+
+    # -- Pestaña 1: Generar preplot manual ---------------------------------
+    def _build_preplot_pestana_generar(self):
+        pag = QWidget()
+        v = QVBoxLayout(pag)
+        v.setSpacing(6)
+        self._pp_widgets_grilla = []  # contenedores visibles sólo en modo "Grilla 3D"
+        self._pp_widgets_linea = []   # ... sólo en modo "Línea 2D"
+
+        # ---- Grupo A: geometría base ----
+        grp_a, v_a = self._tarjeta_card("pp_card_a")
+        fila_tipo = QHBoxLayout()
+        fila_tipo.addWidget(self._reg(QLabel(), "pp_lbl_tipo"))
         self.rb_preplot_grilla = self._reg(QRadioButton(), "rb_grid")
         self.rb_preplot_linea = self._reg(QRadioButton(), "rb_line")
         self.rb_preplot_grilla.setChecked(True)
         grupo_modo = QButtonGroup(self)
         grupo_modo.addButton(self.rb_preplot_grilla)
         grupo_modo.addButton(self.rb_preplot_linea)
-        h_modo.addWidget(self.rb_preplot_grilla)
-        h_modo.addWidget(self.rb_preplot_linea)
-        v.addWidget(grp_modo)
+        fila_tipo.addWidget(self.rb_preplot_grilla)
+        fila_tipo.addWidget(self.rb_preplot_linea)
+        fila_tipo.addStretch(1)
+        v_a.addLayout(fila_tipo)
 
-        self.stack_preplot = QStackedWidget()
-        self.stack_preplot.addWidget(self._build_preplot_pagina_grilla())
-        self.stack_preplot.addWidget(self._build_preplot_pagina_linea())
-        v.addWidget(self.stack_preplot)
+        # Modo grilla, grupo A: Este | Norte | Azimut
+        self.sp_grilla_origen_x = self._coord_spinbox()
+        self.sp_grilla_origen_y = self._coord_spinbox()
+        self.sp_grilla_azimut = self._spin_decimal(0.0, 359.999)
+        self._reg(self.sp_grilla_azimut, "tip_grid_azimuth", kind="tooltip")
+        a_grilla, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_origen_x", self.sp_grilla_origen_x)
+        self._celda_campo(g, 0, 1, "pp_origen_y", self.sp_grilla_origen_y)
+        self._celda_campo(g, 0, 2, "pp_azimut", self.sp_grilla_azimut)
+        v_a.addWidget(a_grilla)
+        self._pp_widgets_grilla.append(a_grilla)
 
-        self.rb_preplot_grilla.toggled.connect(lambda on: on and self.stack_preplot.setCurrentIndex(0))
-        self.rb_preplot_linea.toggled.connect(lambda on: on and self.stack_preplot.setCurrentIndex(1))
+        # Modo línea, grupo A: cómo definir la línea + sus coordenadas
+        a_linea = QWidget()
+        v_al = QVBoxLayout(a_linea)
+        v_al.setContentsMargins(0, 0, 0, 0)
+        v_al.setSpacing(6)
+        fila_def = QHBoxLayout()
+        fila_def.addWidget(self._reg(QLabel(), "pp_lbl_def_linea"))
+        self.rb_linea_dos_puntos = self._reg(QRadioButton(), "rb_line_two_points")
+        self.rb_linea_azimut = self._reg(QRadioButton(), "rb_line_azimuth")
+        self.rb_linea_dos_puntos.setChecked(True)
+        grupo_sub = QButtonGroup(self)
+        grupo_sub.addButton(self.rb_linea_dos_puntos)
+        grupo_sub.addButton(self.rb_linea_azimut)
+        fila_def.addWidget(self.rb_linea_dos_puntos)
+        fila_def.addWidget(self.rb_linea_azimut)
+        fila_def.addStretch(1)
+        v_al.addLayout(fila_def)
 
-        fila_acciones = QHBoxLayout()
-        btn_generar = self._reg(QPushButton(), "btn_preplot_generate")
-        btn_generar.clicked.connect(self.generar_preplot)
-        btn_guardar = self._reg(QPushButton(), "btn_preplot_save")
-        btn_guardar.clicked.connect(self.guardar_preplot_en_bd)
-        fila_acciones.addWidget(btn_generar)
-        fila_acciones.addWidget(btn_guardar)
-        v.addLayout(fila_acciones)
+        self.stack_linea = QStackedWidget()
+        pag_dos, g2 = self._bloque_filas()
+        self.sp_linea_ini_x = self._coord_spinbox()
+        self.sp_linea_ini_y = self._coord_spinbox()
+        self.sp_linea_fin_x = self._coord_spinbox()
+        self.sp_linea_fin_y = self._coord_spinbox()
+        self._celda_campo(g2, 0, 0, "pp_ini_x", self.sp_linea_ini_x)
+        self._celda_campo(g2, 0, 1, "pp_ini_y", self.sp_linea_ini_y)
+        self._celda_campo(g2, 1, 0, "pp_fin_x", self.sp_linea_fin_x)
+        self._celda_campo(g2, 1, 1, "pp_fin_y", self.sp_linea_fin_y)
+        self.stack_linea.addWidget(pag_dos)
+        pag_az, g3 = self._bloque_filas()
+        self.sp_linea_az_x = self._coord_spinbox()
+        self.sp_linea_az_y = self._coord_spinbox()
+        self.sp_linea_azimut = self._spin_decimal(0.0, 359.999)
+        self.sp_linea_longitud = self._spin_decimal(0.001, 100000000.0, 1000.0)
+        self._celda_campo(g3, 0, 0, "pp_ini_x", self.sp_linea_az_x)
+        self._celda_campo(g3, 0, 1, "pp_ini_y", self.sp_linea_az_y)
+        self._celda_campo(g3, 0, 2, "pp_azimut", self.sp_linea_azimut)
+        self._celda_campo(g3, 1, 0, "pp_longitud", self.sp_linea_longitud)
+        self.stack_linea.addWidget(pag_az)
+        v_al.addWidget(self.stack_linea)
+        v_a.addWidget(a_linea)
+        self._pp_widgets_linea.append(a_linea)
+        self.rb_linea_dos_puntos.toggled.connect(lambda on: on and self.stack_linea.setCurrentIndex(0))
+        self.rb_linea_azimut.toggled.connect(lambda on: on and self.stack_linea.setCurrentIndex(1))
+        v.addWidget(grp_a)
 
-        self.lbl_preplot_resumen = QLabel(self.t("lbl_preplot_empty"))
+        # ---- Grupo B: espaciados y líneas ----
+        grp_b, v_b = self._tarjeta_card("pp_card_b")
+        self.sp_grilla_esp_lineas = self._spin_decimal(0.001, 1000000.0, 300.0)
+        self.sp_grilla_esp_estaciones = self._spin_decimal(0.001, 1000000.0, 50.0)
+        self.sp_grilla_n_lineas = self._spin_entero(1, 100000, 5)
+        self.sp_grilla_n_estaciones = self._spin_entero(1, 1000000, 20)
+        b_grilla, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_dist_lineas", self.sp_grilla_esp_lineas)
+        self._celda_campo(g, 0, 1, "pp_dist_estaciones", self.sp_grilla_esp_estaciones)
+        self._celda_campo(g, 1, 0, "pp_n_lineas", self.sp_grilla_n_lineas)
+        self._celda_campo(g, 1, 1, "pp_n_estaciones", self.sp_grilla_n_estaciones)
+        v_b.addWidget(b_grilla)
+        self._pp_widgets_grilla.append(b_grilla)
+
+        self.sp_linea_espaciamiento = self._spin_decimal(0.001, 1000000.0, 50.0)
+        self.sp_linea_numero = self._spin_entero(-999999, 999999, 1000)
+        self.chk_linea_incluir_final = self._reg(QCheckBox(), "chk_include_end")
+        self.chk_linea_incluir_final.setChecked(True)
+        b_linea, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_dist_estaciones", self.sp_linea_espaciamiento)
+        self._celda_campo(g, 0, 1, "pp_num_linea", self.sp_linea_numero)
+        g.addWidget(self.chk_linea_incluir_final, 1, 0, 1, 3)
+        v_b.addWidget(b_linea)
+        self._pp_widgets_linea.append(b_linea)
+        v.addWidget(grp_b)
+
+        # ---- Grupo C: indexación y nomenclatura ----
+        grp_c, v_c = self._tarjeta_card("pp_card_c")
+        self.sp_grilla_primera_linea = self._spin_entero(-999999, 999999, 1000)
+        self.sp_grilla_incr_linea = self._spin_entero(-99999, 99999, 1)
+        self.sp_grilla_digitos_linea = self._spin_entero(1, 10, 4)
+        self.sp_grilla_primera_estacion = self._spin_entero(-999999, 999999, 1)
+        self.sp_grilla_incr_estacion = self._spin_entero(-99999, 99999, 1)
+        self.sp_grilla_digitos_estacion = self._spin_entero(1, 10, 4)
+        self.cb_grilla_descriptor = QComboBox()
+        self._fill_descriptor_combo(self.cb_grilla_descriptor)
+        c_grilla, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_primer_linea", self.sp_grilla_primera_linea)
+        self._celda_campo(g, 0, 1, "pp_incr_linea", self.sp_grilla_incr_linea)
+        self._celda_campo(g, 0, 2, "pp_dig_linea", self.sp_grilla_digitos_linea)
+        self._celda_campo(g, 1, 0, "pp_primer_estacion", self.sp_grilla_primera_estacion)
+        self._celda_campo(g, 1, 1, "pp_incr_estacion", self.sp_grilla_incr_estacion)
+        self._celda_campo(g, 1, 2, "pp_dig_estacion", self.sp_grilla_digitos_estacion)
+        self._celda_campo(g, 2, 0, "pp_descriptor", self.cb_grilla_descriptor)
+        v_c.addWidget(c_grilla)
+        self._pp_widgets_grilla.append(c_grilla)
+
+        self.sp_linea_primera_estacion = self._spin_entero(-999999, 999999, 1)
+        self.sp_linea_incr_estacion = self._spin_entero(-99999, 99999, 1)
+        self.sp_linea_digitos_estacion = self._spin_entero(1, 10, 4)
+        self.sp_linea_digitos_linea = self._spin_entero(1, 10, 4)
+        self.cb_linea_descriptor = QComboBox()
+        self._fill_descriptor_combo(self.cb_linea_descriptor)
+        c_linea, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_primer_estacion", self.sp_linea_primera_estacion)
+        self._celda_campo(g, 0, 1, "pp_incr_estacion", self.sp_linea_incr_estacion)
+        self._celda_campo(g, 0, 2, "pp_dig_estacion", self.sp_linea_digitos_estacion)
+        self._celda_campo(g, 1, 0, "pp_dig_linea", self.sp_linea_digitos_linea)
+        self._celda_campo(g, 1, 1, "pp_descriptor", self.cb_linea_descriptor)
+        v_c.addWidget(c_linea)
+        self._pp_widgets_linea.append(c_linea)
+        v.addWidget(grp_c)
+
+        # ---- Barra de acciones fija + estado ----
+        barra = QHBoxLayout()
+        self.tb_pp_generar = self._boton_barra("pp_tb_generar", "pp_tip_generar", self.generar_preplot)
+        self.tb_pp_limpiar = self._boton_barra("pp_tb_limpiar", "pp_tip_limpiar", self.limpiar_preplot_generado)
+        self.tb_pp_guardar = self._boton_barra("pp_tb_guardar", "pp_tip_guardar", self.guardar_preplot_en_bd)
+        barra.addWidget(self.tb_pp_generar)
+        barra.addWidget(self.tb_pp_limpiar)
+        barra.addWidget(self.tb_pp_guardar)
+        barra.addStretch(1)
+        v.addLayout(barra)
+        # Mensaje de estado sutil, justo debajo de la barra (los tres
+        # botones ya ocupan casi todo el ancho de la ventana).
+        self.lbl_preplot_resumen = QLabel()
+        self.lbl_preplot_resumen.setTextFormat(_valor_enum(Qt, "RichText", "TextFormat"))
+        self.lbl_preplot_resumen.setWordWrap(True)
+        self.lbl_preplot_resumen.setSizePolicy(SIZE_POLICY_IGNORED, _valor_enum(QSizePolicy, "Preferred", "Policy"))
         v.addWidget(self.lbl_preplot_resumen)
+        v.addStretch(1)
 
-        self.log_preplot = QPlainTextEdit()
-        self.log_preplot.setReadOnly(True)
-        self.log_preplot.setMaximumHeight(90)
-        v.addWidget(self.log_preplot)
+        self.rb_preplot_grilla.toggled.connect(self._actualizar_modo_preplot)
+        self.rb_linea_dos_puntos.toggled.connect(self._actualizar_modo_preplot)
+        return pag
 
-        v.addWidget(self._build_preplot_externo_grupo())
+    def _actualizar_modo_preplot(self, *_args):
+        """Muestra los bloques de campos del modo elegido (Grilla 3D /
+        Línea 2D) y oculta los del otro; la casilla "incluir el punto
+        final" sólo aplica a la línea entre dos puntos."""
+        grilla = self.rb_preplot_grilla.isChecked()
+        for wdg in self._pp_widgets_grilla:
+            wdg.setVisible(grilla)
+        for wdg in self._pp_widgets_linea:
+            wdg.setVisible(not grilla)
+        self.chk_linea_incluir_final.setVisible(self.rb_linea_dos_puntos.isChecked())
 
-        v.addStretch()
-        return w
+    # -- Pestaña 2: Importar archivo externo (SPS / QLD) -------------------
+    def _build_preplot_pestana_archivo(self):
+        pag = QWidget()
+        v = QVBoxLayout(pag)
+        v.setSpacing(6)
+        grp, v_g = self._tarjeta_card("pp_card_archivo")
 
-    def _build_preplot_externo_grupo(self):
-        """Grupo "Importar preplot externo" (v2.6.0, revisado en v2.7.0):
-        subir a PREPLOT preplots ya armados por otro software -- Omni 3D
-        o mesa de Sercel en formato SPS, o una capa ya cargada en QGIS
-        (shapefile, GeoPackage, o un CSV delimitado por comas agregado
-        como capa de puntos) -- a diferencia de "Generar" más arriba,
-        que crea el preplot desde cero dentro del plugin. Ambas fuentes
-        alimentan la misma previsualización (`tbl_preplot_ext_preview`)
-        antes de subir, para poder revisar nombres y marcar duplicados
-        contra lo que ya haya en PREPLOT."""
-        grp = self._reg(QGroupBox(), "grp_preplot_external", kind="title")
-        v_ext = QVBoxLayout(grp)
-        # El texto explicativo que iba aquí ("note_preplot_external") se
-        # movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
+        self.spn_ext_digitos_linea = self._spin_entero(1, 10, 4)
+        self.spn_ext_digitos_estacion = self._spin_entero(1, 10, 4)
+        self._reg(self.spn_ext_digitos_linea, "pp_tip_digitos_ext", kind="tooltip")
+        self._reg(self.spn_ext_digitos_estacion, "pp_tip_digitos_ext", kind="tooltip")
+        cont, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_lbl_dig_linea_ext", self.spn_ext_digitos_linea)
+        self._celda_campo(g, 0, 1, "pp_lbl_dig_estacion_ext", self.spn_ext_digitos_estacion)
+        v_g.addWidget(cont)
 
-        form_processor = QFormLayout()
-        self.txt_preplot_ext_processor = QLineEdit()
-        self._form_row(form_processor, "lbl_processor", self.txt_preplot_ext_processor)
-        v_ext.addLayout(form_processor)
+        fila_btn = QHBoxLayout()
+        btn_sps = self._reg(QPushButton(), "btn_import_sps")
+        btn_sps.clicked.connect(self.importar_preplot_sps)
+        btn_qld = self._reg(QPushButton(), "btn_import_qld")
+        btn_qld.clicked.connect(self.importar_preplot_qld)
+        for b in (btn_sps, btn_qld):
+            b.setMinimumHeight(30)
+            fila_btn.addWidget(b, 1)
+        v_g.addLayout(fila_btn)
+        v.addWidget(grp)
+        v.addStretch(1)
+        return pag
 
-        # -- SPS (Omni 3D / mesa de Sercel) --
-        form_digitos_ext = QFormLayout()
-        self.spn_ext_digitos_linea = QSpinBox()
-        self.spn_ext_digitos_linea.setRange(1, 10)
-        self.spn_ext_digitos_linea.setValue(4)
-        self._form_row(form_digitos_ext, "lbl_line_digits", self.spn_ext_digitos_linea)
-        self.spn_ext_digitos_estacion = QSpinBox()
-        self.spn_ext_digitos_estacion.setRange(1, 10)
-        self.spn_ext_digitos_estacion.setValue(4)
-        self._form_row(form_digitos_ext, "lbl_station_digits", self.spn_ext_digitos_estacion)
-        v_ext.addLayout(form_digitos_ext)
+    # -- Pestaña 3: Importar capa de QGIS -----------------------------------
+    def _build_preplot_pestana_capa(self):
+        pag = QWidget()
+        v = QVBoxLayout(pag)
+        v.setSpacing(6)
+        grp, v_g = self._tarjeta_card("pp_card_capa")
 
-        btn_importar_sps = self._reg(QPushButton(), "btn_import_sps")
-        btn_importar_sps.clicked.connect(self.importar_preplot_sps)
-        v_ext.addWidget(btn_importar_sps)
+        v_g.addWidget(self._reg(QLabel(), "lbl_ext_layer"))
+        fila_capa = QHBoxLayout()
+        self.cb_ext_capa = self._combo_campo()
+        self.cb_ext_capa.setMinimumContentsLength(20)
+        btn_refrescar = QToolButton()
+        btn_refrescar.setText("⟳")
+        btn_refrescar.setStyleSheet(ESTILO_BTN_BARRA)
+        self._reg(btn_refrescar, "pp_tip_refrescar_capas", kind="tooltip")
+        btn_refrescar.clicked.connect(self._refrescar_capas_preplot_ext)
+        fila_capa.addWidget(self.cb_ext_capa, 1)
+        fila_capa.addWidget(btn_refrescar)
+        v_g.addLayout(fila_capa)
 
-        # -- QLD ("QLD9"), formato binario propietario de diseño/QC de
-        # puntos sísmicos (v2.12.0) --
-        btn_importar_qld = self._reg(QPushButton(), "btn_import_qld")
-        btn_importar_qld.clicked.connect(self.importar_preplot_qld)
-        v_ext.addWidget(btn_importar_qld)
-
-        # -- Capa ya cargada en QGIS (shapefile, GeoPackage, o un CSV
-        # delimitado por comas agregado como capa de puntos) --
-        fila_capa_ext = QHBoxLayout()
-        self.cb_ext_capa = QComboBox()
-        btn_refrescar_capas = self._reg(QPushButton(), "btn_refresh_layers")
-        btn_refrescar_capas.clicked.connect(self._refrescar_capas_preplot_ext)
-        fila_capa_ext.addWidget(self.cb_ext_capa)
-        fila_capa_ext.addWidget(btn_refrescar_capas)
-        v_ext.addWidget(self._reg(QLabel(), "lbl_ext_layer"))
-        v_ext.addLayout(fila_capa_ext)
-
-        form_cols_ext = QFormLayout()
-        self.cb_ext_col_nombre = QComboBox()
-        self.cb_ext_col_track = QComboBox()
-        self.cb_ext_col_bin = QComboBox()
-        self.cb_ext_col_z = QComboBox()
-        self.cb_ext_col_descriptor = QComboBox()
-        self._form_row(form_cols_ext, "lbl_col_name", self.cb_ext_col_nombre)
-        self._form_row(form_cols_ext, "lbl_ext_col_track", self.cb_ext_col_track)
-        self._form_row(form_cols_ext, "lbl_ext_col_bin", self.cb_ext_col_bin)
-        self._form_row(form_cols_ext, "lbl_col_z", self.cb_ext_col_z)
-        self._form_row(form_cols_ext, "lbl_ext_col_descriptor", self.cb_ext_col_descriptor)
-        v_ext.addLayout(form_cols_ext)
+        self.cb_ext_col_nombre = self._combo_campo()
+        self.cb_ext_col_track = self._combo_campo()
+        self.cb_ext_col_bin = self._combo_campo()
+        self.cb_ext_col_z = self._combo_campo()
+        self.cb_ext_col_descriptor = self._combo_campo()
+        cont, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "pp_campo_nombre", self.cb_ext_col_nombre)
+        self._celda_campo(g, 0, 1, "pp_campo_linea", self.cb_ext_col_track)
+        self._celda_campo(g, 0, 2, "pp_campo_estacion", self.cb_ext_col_bin)
+        self._celda_campo(g, 1, 0, "pp_campo_cota", self.cb_ext_col_z)
+        self._celda_campo(g, 1, 1, "pp_campo_descriptor", self.cb_ext_col_descriptor)
+        v_g.addWidget(cont)
 
         self.cb_ext_capa.currentIndexChanged.connect(self._on_ext_capa_changed)
         self._refrescar_capas_preplot_ext()
 
-        btn_importar_capa_ext = self._reg(QPushButton(), "btn_import_capa_qgis")
-        btn_importar_capa_ext.clicked.connect(self.importar_preplot_capa_qgis)
-        v_ext.addWidget(btn_importar_capa_ext)
+        btn_importar = self._reg(QPushButton(), "btn_import_capa_qgis")
+        btn_importar.setMinimumHeight(30)
+        btn_importar.clicked.connect(self.importar_preplot_capa_qgis)
+        v_g.addWidget(btn_importar)
+        v.addWidget(grp)
+        v.addStretch(1)
+        return pag
 
-        # -- Previsualización común (alimentada por SPS y/o CSV) --
+    # -- Zona inferior: tabla de datos + cierre ------------------------------
+    def _build_preplot_inferior(self):
+        self.stack_preplot_inferior = QStackedWidget()
+
+        # Página 0 (pestaña 1): puntos generados.
+        pg0 = QWidget()
+        v0 = QVBoxLayout(pg0)
+        v0.setContentsMargins(0, 0, 0, 0)
+        v0.setSpacing(4)
+        self.tbl_preplot_gen_preview = QTableWidget(0, 6)
+        self.tbl_preplot_gen_preview.setHorizontalHeaderLabels(self._gen_preview_headers())
+        self.tbl_preplot_gen_preview.horizontalHeader().setStretchLastSection(True)
+        self.tbl_preplot_gen_preview.setMinimumHeight(200)
+        self.tbl_preplot_gen_preview.verticalHeader().setDefaultSectionSize(24)
+        v0.addWidget(self.tbl_preplot_gen_preview, 1)
+        self.lbl_preplot_gen_nota = QLabel("")
+        self.lbl_preplot_gen_nota.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v0.addWidget(self.lbl_preplot_gen_nota)
+        self.stack_preplot_inferior.addWidget(pg0)
+
+        # Página 1 (pestañas 2 y 3): previsualización de lo importado.
+        pg1 = QWidget()
+        v1 = QVBoxLayout(pg1)
+        v1.setContentsMargins(0, 0, 0, 0)
+        v1.setSpacing(4)
         self.tbl_preplot_ext_preview = QTableWidget(0, EXT_PREVIEW_N_COLS)
         self.tbl_preplot_ext_preview.setHorizontalHeaderLabels(self._ext_preview_headers())
         self.tbl_preplot_ext_preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        v_ext.addWidget(self.tbl_preplot_ext_preview)
+        self.tbl_preplot_ext_preview.setMinimumHeight(200)
+        self.tbl_preplot_ext_preview.verticalHeader().setDefaultSectionSize(24)
+        v1.addWidget(self.tbl_preplot_ext_preview, 1)
 
+        fila_resumen = QHBoxLayout()
         self.lbl_preplot_ext_resumen = QLabel("")
-        v_ext.addWidget(self.lbl_preplot_ext_resumen)
-
-        fila_acciones_ext = QHBoxLayout()
+        self.lbl_preplot_ext_resumen.setStyleSheet(ESTILO_ROTULO_TENUE)
+        fila_resumen.addWidget(self.lbl_preplot_ext_resumen, 1)
         btn_limpiar_ext = self._reg(QPushButton(), "btn_clear_preview")
+        btn_limpiar_ext.setStyleSheet(ESTILO_BTN_ENLACE)
         btn_limpiar_ext.clicked.connect(self.limpiar_preplot_ext_preview)
-        btn_subir_ext = self._reg(QPushButton(), "btn_upload_preplot_external")
-        btn_subir_ext.clicked.connect(self.subir_preplot_externo)
-        fila_acciones_ext.addWidget(btn_limpiar_ext)
-        fila_acciones_ext.addWidget(btn_subir_ext)
-        v_ext.addLayout(fila_acciones_ext)
+        fila_resumen.addWidget(btn_limpiar_ext)
+        self.btn_toggle_log_preplot = QPushButton()
+        self.btn_toggle_log_preplot.setCheckable(True)
+        self.btn_toggle_log_preplot.setStyleSheet(ESTILO_BTN_ENLACE)
+        fila_resumen.addWidget(self.btn_toggle_log_preplot)
+        v1.addLayout(fila_resumen)
 
-        return grp
+        # El registro queda oculto por defecto, pero `self.log_preplot`
+        # sigue recibiendo texto (y se abre solo si hay un aviso).
+        self.log_preplot = QPlainTextEdit()
+        self.log_preplot.setReadOnly(True)
+        self.log_preplot.setMaximumHeight(90)
+        self.log_preplot.setVisible(False)
+        self.btn_toggle_log_preplot.toggled.connect(self.log_preplot.setVisible)
+        self.btn_toggle_log_preplot.toggled.connect(lambda _c: self._actualizar_texto_boton_log_preplot())
+        self._actualizar_texto_boton_log_preplot()
+        v1.addWidget(self.log_preplot)
+
+        # Cierre: "Processor" a la izquierda y el botón verde a la derecha.
+        fila_cierre = QHBoxLayout()
+        lbl_proc = self._reg(QLabel(), "pp_lbl_processor")
+        self._reg(lbl_proc, "lbl_processor", kind="tooltip")
+        fila_cierre.addWidget(lbl_proc)
+        self.txt_preplot_ext_processor = QLineEdit()
+        self.txt_preplot_ext_processor.setMinimumWidth(190)
+        self.txt_preplot_ext_processor.setMaximumWidth(280)
+        self._reg(self.txt_preplot_ext_processor, "pp_ph_processor", kind="placeholder")
+        self._reg(self.txt_preplot_ext_processor, "lbl_processor", kind="tooltip")
+        fila_cierre.addWidget(self.txt_preplot_ext_processor, 1)
+        fila_cierre.addStretch(1)
+        self.btn_subir_preplot_ext = self._reg(QPushButton(), "btn_upload_preplot_external")
+        self.btn_subir_preplot_ext.setStyleSheet(ESTILO_BTN_SUBIR_VERDE)
+        self.btn_subir_preplot_ext.setMinimumHeight(40)
+        self.btn_subir_preplot_ext.setMinimumWidth(300)
+        self.btn_subir_preplot_ext.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
+        self.btn_subir_preplot_ext.setEnabled(False)
+        self.btn_subir_preplot_ext.clicked.connect(self.subir_preplot_externo)
+        fila_cierre.addWidget(self.btn_subir_preplot_ext)
+        v1.addLayout(fila_cierre)
+        self.stack_preplot_inferior.addWidget(pg1)
+        return self.stack_preplot_inferior
+
+    def _on_pestana_preplot_cambiada(self, idx):
+        """Pestaña 1 -> tabla de puntos generados; pestañas 2 y 3 ->
+        previsualización de lo importado. Las páginas que no están a la
+        vista pasan a política vertical `Ignored`, para que ni las
+        pestañas ni la zona inferior reserven la altura de la página más
+        alta (QStackedLayout respeta `Ignored` al calcular su tamaño)."""
+        pref = _valor_enum(QSizePolicy, "Preferred", "Policy")
+        for i in range(self.tabs_preplot.count()):
+            self.tabs_preplot.widget(i).setSizePolicy(pref, pref if i == idx else SIZE_POLICY_IGNORED)
+        destino = 0 if idx == 0 else 1
+        for i in range(self.stack_preplot_inferior.count()):
+            self.stack_preplot_inferior.widget(i).setSizePolicy(pref, pref if i == destino else SIZE_POLICY_IGNORED)
+        self.stack_preplot_inferior.setCurrentIndex(destino)
+        self.tabs_preplot.updateGeometry()
+
+    def _retraducir_pestanas_preplot(self):
+        for i, key in enumerate(("pp_tab_generar", "pp_tab_archivo", "pp_tab_capa")):
+            self.tabs_preplot.setTabText(i, self.t(key))
+        # Que los títulos de las 3 pestañas quepan siempre completos (sin
+        # flechas de desplazamiento): ancho mínimo = el de la barra de
+        # pestañas + el botón "?" de la esquina.
+        barra = self.tabs_preplot.tabBar()
+        barra.setUsesScrollButtons(False)
+        self.tabs_preplot.setMinimumWidth(barra.sizeHint().width() + 40)
+
+    def _actualizar_texto_boton_log_preplot(self):
+        key = "btn_log_hide" if self.btn_toggle_log_preplot.isChecked() else "btn_log_show"
+        self.btn_toggle_log_preplot.setText(self.t(key))
+
+    def _gen_preview_headers(self):
+        return [
+            self.t("col_point_name"), self.t("col_track"), self.t("col_bin"),
+            self.t("col_easting"), self.t("col_northing"), self.t("col_descriptor"),
+        ]
+
+    def _llenar_tabla_preplot_gen(self):
+        """Dibuja en la tabla de la pestaña 1 los puntos generados (sólo
+        lectura). Se dibujan como máximo `_MAX_FILAS_TABLA_PREPLOT_GEN`
+        filas para que una grilla enorme no congele la ventana; la capa
+        temporal y el guardado en PREPLOT siempre usan TODOS los puntos."""
+        puntos = getattr(self, "preplot_generated_points", None) or []
+        mostrados = puntos[: self._MAX_FILAS_TABLA_PREPLOT_GEN]
+        tbl = self.tbl_preplot_gen_preview
+        tbl.setUpdatesEnabled(False)
+        try:
+            tbl.setRowCount(len(mostrados))
+            for row, p in enumerate(mostrados):
+                textos = (p.name, p.track, p.bin, f"{p.x:.3f}", f"{p.y:.3f}", p.descriptor)
+                for col, texto in enumerate(textos):
+                    item = QTableWidgetItem(str(texto))
+                    item.setFlags(item.flags() & ~ITEM_IS_EDITABLE)
+                    tbl.setItem(row, col, item)
+        finally:
+            tbl.setUpdatesEnabled(True)
+        if len(puntos) > len(mostrados):
+            self.lbl_preplot_gen_nota.setText(self.t("pp_gen_truncado", shown=len(mostrados), n=len(puntos)))
+        else:
+            self.lbl_preplot_gen_nota.setText("")
+
+    def _quitar_capa_preplot_generado(self):
+        capa = getattr(self, "_preplot_gen_layer", None)
+        if capa is None:
+            return
+        try:
+            if QgsProject.instance().mapLayer(capa.id()) is not None:
+                self.project.removeMapLayer(capa.id())
+        except RuntimeError:
+            # El objeto Qt/QGIS ya fue eliminado (p.ej. el usuario quitó
+            # la capa a mano) -- nada que limpiar.
+            pass
+        self._preplot_gen_layer = None
+
+    def limpiar_preplot_generado(self):
+        """"Limpiar previsualización" de la pestaña 1: quita la capa
+        temporal del mapa y vacía los puntos generados/la tabla. No toca
+        lo que ya se haya guardado en PREPLOT."""
+        self._quitar_capa_preplot_generado()
+        self.preplot_generated_points = None
+        self._last_preplot_summary = None
+        self._llenar_tabla_preplot_gen()
+        self._render_preplot_label()
 
     @staticmethod
     def _coord_spinbox(default=0.0):
@@ -3036,173 +4232,6 @@ class GNSSeismicController(QWidget):
         idx = combo.findData(current_data)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
-
-    def _build_preplot_pagina_grilla(self):
-        w = QWidget()
-        form = QFormLayout(w)
-
-        self.sp_grilla_origen_x = self._coord_spinbox()
-        self.sp_grilla_origen_y = self._coord_spinbox()
-        self._form_row(form, "lbl_origin_x", self.sp_grilla_origen_x)
-        self._form_row(form, "lbl_origin_y", self.sp_grilla_origen_y)
-
-        self.sp_grilla_azimut = QDoubleSpinBox()
-        self.sp_grilla_azimut.setRange(0.0, 359.999)
-        self.sp_grilla_azimut.setDecimals(3)
-        self._reg(self.sp_grilla_azimut, "tip_grid_azimuth", kind="tooltip")
-        self._form_row(form, "lbl_grid_azimuth", self.sp_grilla_azimut)
-
-        self.sp_grilla_esp_lineas = QDoubleSpinBox()
-        self.sp_grilla_esp_lineas.setRange(0.001, 1000000.0)
-        self.sp_grilla_esp_lineas.setDecimals(3)
-        self.sp_grilla_esp_lineas.setValue(300.0)
-        self._form_row(form, "lbl_line_spacing", self.sp_grilla_esp_lineas)
-
-        self.sp_grilla_esp_estaciones = QDoubleSpinBox()
-        self.sp_grilla_esp_estaciones.setRange(0.001, 1000000.0)
-        self.sp_grilla_esp_estaciones.setDecimals(3)
-        self.sp_grilla_esp_estaciones.setValue(50.0)
-        self._form_row(form, "lbl_station_spacing", self.sp_grilla_esp_estaciones)
-
-        self.sp_grilla_n_lineas = QSpinBox()
-        self.sp_grilla_n_lineas.setRange(1, 100000)
-        self.sp_grilla_n_lineas.setValue(5)
-        self._form_row(form, "lbl_n_lines", self.sp_grilla_n_lineas)
-
-        self.sp_grilla_n_estaciones = QSpinBox()
-        self.sp_grilla_n_estaciones.setRange(1, 1000000)
-        self.sp_grilla_n_estaciones.setValue(20)
-        self._form_row(form, "lbl_n_stations", self.sp_grilla_n_estaciones)
-
-        self.sp_grilla_primera_linea = QSpinBox()
-        self.sp_grilla_primera_linea.setRange(-999999, 999999)
-        self.sp_grilla_primera_linea.setValue(1000)
-        self._form_row(form, "lbl_first_line", self.sp_grilla_primera_linea)
-
-        self.sp_grilla_incr_linea = QSpinBox()
-        self.sp_grilla_incr_linea.setRange(-99999, 99999)
-        self.sp_grilla_incr_linea.setValue(1)
-        self._form_row(form, "lbl_line_incr", self.sp_grilla_incr_linea)
-
-        self.sp_grilla_primera_estacion = QSpinBox()
-        self.sp_grilla_primera_estacion.setRange(-999999, 999999)
-        self.sp_grilla_primera_estacion.setValue(1)
-        self._form_row(form, "lbl_first_station", self.sp_grilla_primera_estacion)
-
-        self.sp_grilla_incr_estacion = QSpinBox()
-        self.sp_grilla_incr_estacion.setRange(-99999, 99999)
-        self.sp_grilla_incr_estacion.setValue(1)
-        self._form_row(form, "lbl_station_incr", self.sp_grilla_incr_estacion)
-
-        self.sp_grilla_digitos_linea = QSpinBox()
-        self.sp_grilla_digitos_linea.setRange(1, 10)
-        self.sp_grilla_digitos_linea.setValue(4)
-        self._form_row(form, "lbl_line_digits", self.sp_grilla_digitos_linea)
-
-        self.sp_grilla_digitos_estacion = QSpinBox()
-        self.sp_grilla_digitos_estacion.setRange(1, 10)
-        self.sp_grilla_digitos_estacion.setValue(4)
-        self._form_row(form, "lbl_station_digits", self.sp_grilla_digitos_estacion)
-
-        self.cb_grilla_descriptor = QComboBox()
-        self._fill_descriptor_combo(self.cb_grilla_descriptor)
-        self._form_row(form, "lbl_descriptor", self.cb_grilla_descriptor)
-
-        return w
-
-    def _build_preplot_pagina_linea(self):
-        w = QWidget()
-        v = QVBoxLayout(w)
-
-        grp_sub = self._reg(QGroupBox(), "grp_line_mode", kind="title")
-        h_sub = QHBoxLayout(grp_sub)
-        self.rb_linea_dos_puntos = self._reg(QRadioButton(), "rb_line_two_points")
-        self.rb_linea_azimut = self._reg(QRadioButton(), "rb_line_azimuth")
-        self.rb_linea_dos_puntos.setChecked(True)
-        grupo_sub = QButtonGroup(self)
-        grupo_sub.addButton(self.rb_linea_dos_puntos)
-        grupo_sub.addButton(self.rb_linea_azimut)
-        h_sub.addWidget(self.rb_linea_dos_puntos)
-        h_sub.addWidget(self.rb_linea_azimut)
-        v.addWidget(grp_sub)
-
-        self.stack_linea = QStackedWidget()
-
-        pag_dos_puntos = QWidget()
-        f1 = QFormLayout(pag_dos_puntos)
-        self.sp_linea_ini_x = self._coord_spinbox()
-        self.sp_linea_ini_y = self._coord_spinbox()
-        self.sp_linea_fin_x = self._coord_spinbox()
-        self.sp_linea_fin_y = self._coord_spinbox()
-        self._form_row(f1, "lbl_start_x", self.sp_linea_ini_x)
-        self._form_row(f1, "lbl_start_y", self.sp_linea_ini_y)
-        self._form_row(f1, "lbl_end_x", self.sp_linea_fin_x)
-        self._form_row(f1, "lbl_end_y", self.sp_linea_fin_y)
-        self.stack_linea.addWidget(pag_dos_puntos)
-
-        pag_azimut = QWidget()
-        f2 = QFormLayout(pag_azimut)
-        self.sp_linea_az_x = self._coord_spinbox()
-        self.sp_linea_az_y = self._coord_spinbox()
-        self.sp_linea_azimut = QDoubleSpinBox()
-        self.sp_linea_azimut.setRange(0.0, 359.999)
-        self.sp_linea_azimut.setDecimals(3)
-        self.sp_linea_longitud = QDoubleSpinBox()
-        self.sp_linea_longitud.setRange(0.001, 100000000.0)
-        self.sp_linea_longitud.setDecimals(3)
-        self.sp_linea_longitud.setValue(1000.0)
-        self._form_row(f2, "lbl_start_x", self.sp_linea_az_x)
-        self._form_row(f2, "lbl_start_y", self.sp_linea_az_y)
-        self._form_row(f2, "lbl_azimuth", self.sp_linea_azimut)
-        self._form_row(f2, "lbl_length", self.sp_linea_longitud)
-        self.stack_linea.addWidget(pag_azimut)
-
-        v.addWidget(self.stack_linea)
-        self.rb_linea_dos_puntos.toggled.connect(lambda on: on and self.stack_linea.setCurrentIndex(0))
-        self.rb_linea_azimut.toggled.connect(lambda on: on and self.stack_linea.setCurrentIndex(1))
-
-        form_comun = QFormLayout()
-        self.sp_linea_espaciamiento = QDoubleSpinBox()
-        self.sp_linea_espaciamiento.setRange(0.001, 1000000.0)
-        self.sp_linea_espaciamiento.setDecimals(3)
-        self.sp_linea_espaciamiento.setValue(50.0)
-        self._form_row(form_comun, "lbl_station_spacing", self.sp_linea_espaciamiento)
-
-        self.sp_linea_numero = QSpinBox()
-        self.sp_linea_numero.setRange(-999999, 999999)
-        self.sp_linea_numero.setValue(1000)
-        self._form_row(form_comun, "lbl_line_number", self.sp_linea_numero)
-
-        self.sp_linea_primera_estacion = QSpinBox()
-        self.sp_linea_primera_estacion.setRange(-999999, 999999)
-        self.sp_linea_primera_estacion.setValue(1)
-        self._form_row(form_comun, "lbl_first_station", self.sp_linea_primera_estacion)
-
-        self.sp_linea_incr_estacion = QSpinBox()
-        self.sp_linea_incr_estacion.setRange(-99999, 99999)
-        self.sp_linea_incr_estacion.setValue(1)
-        self._form_row(form_comun, "lbl_station_incr", self.sp_linea_incr_estacion)
-
-        self.sp_linea_digitos_linea = QSpinBox()
-        self.sp_linea_digitos_linea.setRange(1, 10)
-        self.sp_linea_digitos_linea.setValue(4)
-        self._form_row(form_comun, "lbl_line_digits", self.sp_linea_digitos_linea)
-
-        self.sp_linea_digitos_estacion = QSpinBox()
-        self.sp_linea_digitos_estacion.setRange(1, 10)
-        self.sp_linea_digitos_estacion.setValue(4)
-        self._form_row(form_comun, "lbl_station_digits", self.sp_linea_digitos_estacion)
-
-        self.chk_linea_incluir_final = self._reg(QCheckBox(), "chk_include_end")
-        self.chk_linea_incluir_final.setChecked(True)
-        form_comun.addRow(self.chk_linea_incluir_final)
-
-        self.cb_linea_descriptor = QComboBox()
-        self._fill_descriptor_combo(self.cb_linea_descriptor)
-        self._form_row(form_comun, "lbl_descriptor", self.cb_linea_descriptor)
-
-        v.addLayout(form_comun)
-        return w
 
     def generar_preplot(self):
         try:
@@ -3260,8 +4289,11 @@ class GNSSeismicController(QWidget):
         self.preplot_generated_points = puntos
         self._last_preplot_summary = (len(puntos), modo_key)
         self._render_preplot_label()
+        self._llenar_tabla_preplot_gen()
         self.log_preplot.appendPlainText(self.t("log_preplot_generated", n=len(puntos), modo=modo_texto))
 
+        # La capa temporal anterior se reemplaza (no se acumulan).
+        self._quitar_capa_preplot_generado()
         dest_crs = self._working_crs()
         layer = QgsVectorLayer(f"Point?crs={dest_crs.authid()}", "Preplot generado", "memory")
         prov = layer.dataProvider()
@@ -3281,8 +4313,10 @@ class GNSSeismicController(QWidget):
         prov.addFeatures(feats)
         layer.updateExtents()
         self.project.addMapLayer(layer)
+        self._preplot_gen_layer = layer
         self._zoom_canvas_a_capa(layer)
 
+    @_escritura()
     def guardar_preplot_en_bd(self):
         if not self._require_project():
             return
@@ -3464,6 +4498,10 @@ class GNSSeismicController(QWidget):
             return
         for w in qf.warnings:
             self.log_preplot.appendPlainText(self.t("log_qld_datum_warning", warning=w))
+        if qf.warnings:
+            # El registro está oculto por defecto: con un aviso de datum se
+            # abre solo para que no pase inadvertido.
+            self.btn_toggle_log_preplot.setChecked(True)
 
         line_digits = self.spn_ext_digitos_linea.value()
         dest_crs = self._working_crs()
@@ -3615,6 +4653,8 @@ class GNSSeismicController(QWidget):
         n = len(self._preplot_ext_preview)
         n_dup = sum(1 for f in self._preplot_ext_preview if f.get("duplicado"))
         self.lbl_preplot_ext_resumen.setText(self.t("lbl_preplot_ext_summary", n=n, dup=n_dup))
+        if hasattr(self, "btn_subir_preplot_ext"):
+            self.btn_subir_preplot_ext.setEnabled(n > 0)
 
     def _sync_preplot_ext_desde_tabla(self):
         tbl = self.tbl_preplot_ext_preview
@@ -3635,6 +4675,7 @@ class GNSSeismicController(QWidget):
         self._llenar_tabla_preplot_ext()
         self._actualizar_capa_provisional_preplot_ext()
 
+    @_escritura()
     def subir_preplot_externo(self):
         if not self._require_project():
             return
@@ -3693,6 +4734,7 @@ class GNSSeismicController(QWidget):
     def _build_tab_importar(self):
         w = QWidget()
         v = QVBoxLayout(w)
+        v.addWidget(self._crear_banner_solo_lectura())
         self._agregar_boton_ayuda(
             v,
             [
@@ -3703,40 +4745,33 @@ class GNSSeismicController(QWidget):
             "tab3_title",
         )
 
-        # Pedido explícito del usuario (v2.62.0): optimizar el espacio de
-        # esta pestaña -- la ÚNICA sección que ocupa el ancho completo de
-        # la ventana es la previsualización (`tbl_import_preview`, al
-        # final); todas las demás se agrupan en recuadros con título y se
-        # acomodan de a 2 por fila, con el mismo mecanismo ya probado en
-        # "Base de Datos" (v2.54.0) para un reparto 50/50 real:
-        # `QSizePolicy.Ignored` en ambos recuadros de la fila + un
-        # `QGridLayout` de dos columnas con el mismo `setColumnStretch`
-        # (un `QHBoxLayout` normal no alcanza -- el lado con más
-        # contenido se queda con más ancho aunque el stretch sea igual).
-        # De paso, todos los botones de esta pestaña se acortaron a una
-        # sola palabra intuitiva (mismo criterio que "Base de Datos" en
-        # la v2.55.0), con un tooltip por botón y el detalle completo
-        # agrupado por sección en la nota de ayuda nueva
-        # ("note_importar_botones", arriba).
+        # Rediseño de la interfaz (v2.63.0, pedido explícito del usuario):
+        #   Columna izquierda: "1. Archivo de Origen" + acordeones PREPLOT /
+        #           Editar en bloque (cerrados, con un resumen de su estado)
+        #           + Corrección de base (sólo si hay base).
+        #   Columna derecha: "2. Filtrado Avanzado" + "3. Formato y
+        #           Finalización" (CTA "Subir").
+        #   Abajo:  la tabla de previsualización, que se queda con todo el
+        #           alto que liberan los bloques colapsados.
+        # Las tarjetas usan `QSizePolicy.Ignored` + `QGridLayout` con el
+        # mismo `setColumnStretch` (reparto 50/50 real, mismo mecanismo que
+        # "Base de Datos"); `_ajustar_tamano_ventana` calcula el ancho de
+        # apertura a partir de ellas.
 
-        # -- Sección: Archivos de campo ---------------------------------
-        grp_archivos = self._reg(QGroupBox(), "grp_archivos_campo", kind="title")
-        v_archivos = QVBoxLayout(grp_archivos)
-        self.lst_dc = QListWidget()
-        self.lst_dc.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        # Con "stretch" (a diferencia del resto de widgets de este
-        # recuadro, que se quedan con su alto natural): si la fila queda
-        # más alta que este recuadro por culpa de su pareja ("Consultar /
-        # filtrar", la más grande de toda la pestaña), el espacio de
-        # sobra lo absorbe la lista -- mostrando más archivos a la vez --
-        # en vez de quedar como un hueco vacío debajo del botón
-        # "Previsualizar". Pedido explícito del usuario tras ver capturas
-        # con huecos entre secciones ("no hay que dejar partes vacias...
-        # no es estetico").
-        v_archivos.addWidget(self.lst_dc, 1)
+        # -- Tarjeta 1: Archivo de Origen -------------------------------
+        grp_origen = self._reg(QGroupBox(), "grp_origen_card", kind="title")
+        grp_origen.setObjectName("card")
+        v_origen = QVBoxLayout(grp_origen)
 
-        fila = QHBoxLayout()
-        btn_add_campo = self._reg(QPushButton(), "btn_add_campo_menu")
+        # Encabezado: rótulo a la izquierda y, en la esquina superior
+        # derecha de la tarjeta, el grupo de botones iconográficos
+        # Agregar (+, con el menú de marcas) / Quitar (-).
+        fila_archivos = QHBoxLayout()
+        fila_archivos.addWidget(self._reg(QLabel(), "grp_archivos_campo"))
+        fila_archivos.addStretch(1)
+        btn_add_campo = QPushButton("+")
+        btn_add_campo.setStyleSheet(ESTILO_BTN_ICONO)
+        btn_add_campo.setMinimumWidth(50)
         self._reg(btn_add_campo, "tip_btn_add_campo", kind="tooltip")
         menu_campo = QMenu(btn_add_campo)
         for menu_key, metodo_nombre in self._CAMPO_BRANDS:
@@ -3744,12 +4779,21 @@ class GNSSeismicController(QWidget):
             accion.triggered.connect(getattr(self, metodo_nombre))
             menu_campo.addAction(accion)
         btn_add_campo.setMenu(menu_campo)
-        btn_quitar = self._reg(QPushButton(), "btn_remove_dc")
+        btn_quitar = QPushButton("−")
+        btn_quitar.setStyleSheet(ESTILO_BTN_ICONO)
+        btn_quitar.setMinimumWidth(34)
         self._reg(btn_quitar, "tip_btn_remove_dc", kind="tooltip")
         btn_quitar.clicked.connect(self.quitar_dc)
-        fila.addWidget(btn_add_campo)
-        fila.addWidget(btn_quitar)
-        v_archivos.addLayout(fila)
+        fila_archivos.addWidget(btn_add_campo)
+        fila_archivos.addWidget(btn_quitar)
+        v_origen.addLayout(fila_archivos)
+
+        self.lst_dc = ListaCompacta()
+        self.lst_dc.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.lst_dc.setMinimumHeight(70)
+        # Con "stretch": si la fila queda más alta que esta tarjeta por
+        # culpa de su pareja, el espacio de sobra lo absorbe la lista.
+        v_origen.addWidget(self.lst_dc, 1)
 
         form = QFormLayout()
         self.spn_digitos_linea = QDoubleSpinBox()
@@ -3758,43 +4802,59 @@ class GNSSeismicController(QWidget):
         self.spn_digitos_linea.setValue(4)
         self._reg(self.spn_digitos_linea, "tip_track_digits", kind="tooltip")
         self._form_row(form, "lbl_track_digits", self.spn_digitos_linea)
-        v_archivos.addLayout(form)
+        # Processor: un único valor para toda la importación (el Surveyor,
+        # en cambio, va por archivo -- ver `_agregar_item_campo`). Ambos
+        # llenan, al subir, las columnas del mismo nombre de POSTPLOT.
+        self.txt_import_processor = QLineEdit()
+        self._reg(self.txt_import_processor, "tip_processor_import", kind="tooltip")
+        self._form_row(form, "lbl_processor_import", self.txt_import_processor)
+        v_origen.addLayout(form)
 
         self.chk_aplicar_geoid = self._reg(QCheckBox(), "chk_apply_geoid")
         self.chk_aplicar_geoid.setEnabled(False)
         self.chk_aplicar_geoid.setToolTip(self.t("tip_apply_geoid_disabled"))
-        v_archivos.addWidget(self.chk_aplicar_geoid)
+        v_origen.addWidget(self.chk_aplicar_geoid)
 
+        # "Previsualizar": botón secundario y discreto, debajo de los
+        # parámetros técnicos (alineado a la derecha, sin ocupar todo el ancho).
+        fila_prev = QHBoxLayout()
+        fila_prev.addStretch(1)
         btn_previsualizar = self._reg(QPushButton(), "btn_import_dc")
         self._reg(btn_previsualizar, "tip_btn_import_dc", kind="tooltip")
+        btn_previsualizar.setMinimumWidth(120)
         btn_previsualizar.clicked.connect(self.previsualizar_dc)
-        v_archivos.addWidget(btn_previsualizar)
+        fila_prev.addWidget(btn_previsualizar)
+        v_origen.addLayout(fila_prev)
 
-        # -- Sección: Comparación con PREPLOT, en memoria, ANTES de subir
-        #    nada a POSTPLOT: así el usuario decide qué puntos subir
-        #    viendo si caen dentro o fuera de tolerancia contra el diseño.
-        grp_comp = self._reg(QGroupBox(), "grp_compare_preplot_import", kind="title")
-        v_comp = QVBoxLayout(grp_comp)
+        # -- Acordeón: Comparación con PREPLOT (en memoria, ANTES de subir
+        #    nada a POSTPLOT). Cerrado por defecto; la cabecera resume el
+        #    estado (tolerancia, emparejamiento aproximado, activo o no).
+        self.acc_preplot = AcordeonSeccion()
+        cont_comp = QWidget()
+        v_comp = QVBoxLayout(cont_comp)
+        v_comp.setContentsMargins(0, 0, 0, 0)
         fila_comp = QHBoxLayout()
         fila_comp.addWidget(self._reg(QLabel(), "lbl_tolerance"))
         self.spn_tolerancia_import = QDoubleSpinBox()
         self.spn_tolerancia_import.setDecimals(3)
         self.spn_tolerancia_import.setRange(0.001, 1000.0)
         self.spn_tolerancia_import.setSingleStep(0.01)
-        self.spn_tolerancia_import.setValue(0.10)
+        self.spn_tolerancia_import.setValue(5.0)  # v2.62.18: 5 m por defecto
         fila_comp.addWidget(self.spn_tolerancia_import)
         v_comp.addLayout(fila_comp)
         self.chk_aproximado_import = self._reg(QCheckBox(), "chk_approx_match")
-        self.chk_aproximado_import.setChecked(True)
+        self.chk_aproximado_import.setChecked(False)  # v2.62.18: sin aproximado por defecto
         self._reg(self.chk_aproximado_import, "tip_approx_match", kind="tooltip")
         v_comp.addWidget(self.chk_aproximado_import)
         btn_refrescar_comp = self._reg(QPushButton(), "btn_refresh_compare_import")
         self._reg(btn_refrescar_comp, "tip_btn_refresh_compare_import", kind="tooltip")
         btn_refrescar_comp.clicked.connect(self.actualizar_comparacion_preview)
         v_comp.addWidget(btn_refrescar_comp)
+        self.acc_preplot.set_contenido(cont_comp)
+        # El resumen "N puntos / emparejados / dentro de tolerancia" se
+        # muestra siempre (fuera del acordeón), debajo de los bloques.
         self.lbl_preview_resumen = QLabel("")
         self.lbl_preview_resumen.setWordWrap(True)
-        v_comp.addWidget(self.lbl_preview_resumen)
 
         # -- Corrección de base RTK libre -> corregida (opcional, ver la
         # nota junto a `CORR_BASE_COL_ARCHIVO`): sólo se muestra cuando
@@ -3808,37 +4868,29 @@ class GNSSeismicController(QWidget):
         # base propia), o el archivo simplemente no trae ninguna, la
         # sección queda oculta.
         self.grp_correccion_base = self._reg(QGroupBox(), "grp_correccion_base_title", kind="title")
+        self.grp_correccion_base.setObjectName("card")
         self.grp_correccion_base.setVisible(False)
         v_corr = QVBoxLayout(self.grp_correccion_base)
-        # El texto explicativo que iba aquí ("note_correccion_base") se
-        # movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
         self.tbl_correccion_base = QTableWidget(0, CORR_BASE_N_COLS)
         self.tbl_correccion_base.setHorizontalHeaderLabels(self._correccion_base_headers())
         self.tbl_correccion_base.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        # Con "stretch", mismo motivo que `lst_dc` arriba: si queda
-        # pareada con un recuadro más alto, la tabla absorbe el espacio
-        # de sobra en vez de dejar un hueco vacío debajo del botón.
+        self.tbl_correccion_base.setMinimumHeight(110)
         v_corr.addWidget(self.tbl_correccion_base, 1)
         btn_aplicar_correccion = self._reg(QPushButton(), "btn_aplicar_correccion_base")
         self._reg(btn_aplicar_correccion, "tip_btn_aplicar_correccion_base", kind="tooltip")
         btn_aplicar_correccion.clicked.connect(self._on_aplicar_correcciones_base)
         v_corr.addWidget(btn_aplicar_correccion)
 
-        # El texto explicativo que iba aquí ("note_manual_fields_import")
-        # se movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
-
-        # -- Sección: "Editar en bloque" -- generalizada en v2.60.0
-        # (pedido explícito del usuario) para que el mismo botón sirva
-        # tanto para la Altura de antena (HI) como para el Descriptor de
-        # toda la columna -- antes sólo existía para HI
-        # (`aplicar_hi_a_todos`, reemplazado por `aplicar_valor_bulk`). El
-        # combo `cb_bulk_campo` decide qué widget de valor mostrar (el
-        # spinbox de HI o el campo de texto de Descriptor) y qué columna/
-        # clave de `self._import_preview` escribir.
-        grp_bulk = self._reg(QGroupBox(), "grp_bulk_apply", kind="title")
-        v_bulk = QVBoxLayout(grp_bulk)
+        # -- Acordeón: Editar en bloque -- generalizado en v2.60.0 para
+        # servir tanto a la Altura de antena (HI) como al Descriptor de
+        # toda la columna (`aplicar_valor_bulk`). El combo `cb_bulk_campo`
+        # decide qué widget de valor mostrar y qué columna/clave de
+        # `self._import_preview` escribir. Cerrado por defecto, con el
+        # campo y el valor elegidos en la cabecera.
+        self.acc_bulk = AcordeonSeccion()
+        cont_bulk = QWidget()
+        v_bulk = QVBoxLayout(cont_bulk)
+        v_bulk.setContentsMargins(0, 0, 0, 0)
         fila_bulk = QHBoxLayout()
         fila_bulk.addWidget(self._reg(QLabel(), "lbl_bulk_apply"))
         self.cb_bulk_campo = QComboBox()
@@ -3862,243 +4914,283 @@ class GNSSeismicController(QWidget):
         self._reg(btn_bulk_apply, "tip_btn_hi_bulk_apply", kind="tooltip")
         btn_bulk_apply.clicked.connect(self.aplicar_valor_bulk)
         v_bulk.addWidget(btn_bulk_apply)
+        self.acc_bulk.set_contenido(cont_bulk)
 
-        # -- Consultar la previsualización antes de subir nada (pedido
+        # Los resúmenes de las cabeceras se actualizan solos.
+        self.spn_tolerancia_import.valueChanged.connect(lambda _v: self._actualizar_resumen_acordeones())
+        self.chk_aproximado_import.toggled.connect(lambda _c: self._actualizar_resumen_acordeones())
+        self.cb_bulk_campo.currentIndexChanged.connect(lambda _i: self._actualizar_resumen_acordeones())
+        self.spn_hi_bulk.valueChanged.connect(lambda _v: self._actualizar_resumen_acordeones())
+        self.txt_descriptor_bulk.textChanged.connect(lambda _t: self._actualizar_resumen_acordeones())
+        self._actualizar_resumen_acordeones()
+
+        # -- Tarjeta 2: Filtrado Avanzado -------------------------------
+        # Consultar la previsualización antes de subir nada (pedido
         # explícito del usuario, con las mismas herramientas -- consulta,
-        # capa de mapa temporal, exportar -- de "Base de Datos", pero acá
-        # NUNCA se reordenan las filas de `tbl_import_preview`: el resto
-        # de este módulo asume que la fila N de la tabla es siempre
-        # `self._import_preview[N]`, así que "ordenar haciendo clic en
-        # una columna" queda deliberadamente fuera de esta ronda para no
-        # arriesgar que se suba o excluya el punto equivocado. La
-        # consulta se resuelve con SQL de verdad, armando una tabla
-        # SQLite en memoria desde `self._import_preview` cada vez que se
-        # aplica -- ver `_construir_conexion_preview_sqlite`.
-        grp_query_preview = self._reg(QGroupBox(), "grp_preview_query", kind="title")
-        v_qp = QVBoxLayout(grp_query_preview)
+        # capa de mapa temporal -- de "Base de Datos", pero acá NUNCA se
+        # reordenan las filas de `tbl_import_preview`: el resto de este
+        # módulo asume que la fila N de la tabla es siempre
+        # `self._import_preview[N]`. La consulta se resuelve con SQL de
+        # verdad en una tabla SQLite en memoria -- ver
+        # `_construir_conexion_preview_sqlite`.
+        grp_filtrado = self._reg(QGroupBox(), "grp_filtrado_card", kind="title")
+        grp_filtrado.setObjectName("card")
+        v_qp = QVBoxLayout(grp_filtrado)
 
-        # Combo de filtros predeterminados + guardado de filtros propios
-        # (v2.60.0, pedido explícito del usuario: "No Preplot" y otros
-        # presets, con el mismo mecanismo de guardar que "Base de Datos"
-        # -- ver `_PREVIEW_FILTER_PRESET_ORDER` y `guardar_filtro_preview_actual`).
-        # Igual que el combo de "Base de Datos", elegir un preset sólo
-        # LLENA el cuadro de texto de abajo -- no ejecuta el filtro solo;
-        # el usuario sigue apretando "Filtrar".
+        # Arriba: filtro predeterminado + guardar. Elegir un preset sólo
+        # LLENA la condición; el usuario sigue apretando "Filtrar".
         fila_preset = QHBoxLayout()
         fila_preset.addWidget(self._reg(QLabel(), "lbl_preview_filter_preset"))
         self.cb_preview_filter_preset = QComboBox()
         self._fill_preview_filter_preset_combo()
         self.cb_preview_filter_preset.currentIndexChanged.connect(self._aplicar_preset_filtro_preview)
-        fila_preset.addWidget(self.cb_preview_filter_preset)
+        fila_preset.addWidget(self.cb_preview_filter_preset, 1)
         btn_guardar_filtro = self._reg(QPushButton(), "btn_save_preview_filter")
         self._reg(btn_guardar_filtro, "tip_btn_save_preview_filter", kind="tooltip")
         btn_guardar_filtro.clicked.connect(self.guardar_filtro_preview_actual)
         fila_preset.addWidget(btn_guardar_filtro)
         v_qp.addLayout(fila_preset)
 
-        self.txt_filtro_preview = QLineEdit()
-        self._reg(self.txt_filtro_preview, "tip_preview_filter_placeholder", kind="placeholder")
-        v_qp.addWidget(self.txt_filtro_preview)
-
-        # Asistente de filtro (v2.60.0, pedido explícito del usuario):
-        # arma una condición de a una (columna + condición + valor) y la
-        # agrega al cuadro de texto de arriba con AND/OR, sin que el
-        # usuario tenga que escribir SQL -- ver
-        # `_agregar_condicion_filtro_preview`/`_construir_condicion_wizard`.
-        # Repartido en dos filas (en vez de una sola fila horizontal con
-        # los 5 controles) desde la v2.62.0, para que entre bien en el
-        # ancho de medio recuadro.
-        grp_filtro_wizard = self._reg(QGroupBox(), "grp_filtro_wizard", kind="title")
-        v_wizard = QVBoxLayout(grp_filtro_wizard)
-
-        h_wizard1 = QHBoxLayout()
-        h_wizard1.addWidget(self._reg(QLabel(), "lbl_filtro_wizard_columna"))
+        # Asistente visual (sin escribir SQL), en UNA sola fila de
+        # entradas: Columna | Condición | Valor | Unir con | (+). Agrega
+        # la condición a la consulta -- ver `_agregar_condicion_filtro_preview`
+        # y `_construir_condicion_wizard`.
+        grid_wizard = QGridLayout()
+        grid_wizard.setHorizontalSpacing(6)
+        grid_wizard.setVerticalSpacing(1)
+        grid_wizard.setColumnStretch(0, 3)
+        grid_wizard.setColumnStretch(1, 3)
+        grid_wizard.setColumnStretch(2, 3)
+        for col, key in enumerate(("lbl_filtro_wizard_columna", "lbl_filtro_wizard_operador", "ph_filtro_wizard_valor_lbl", "lbl_filtro_wizard_conector")):
+            lbl = self._reg(QLabel(), key)
+            lbl.setStyleSheet(ESTILO_ROTULO_TENUE)
+            grid_wizard.addWidget(lbl, 0, col)
         self.cb_filtro_wizard_columna = QComboBox()
-        h_wizard1.addWidget(self.cb_filtro_wizard_columna)
-        h_wizard1.addWidget(self._reg(QLabel(), "lbl_filtro_wizard_operador"))
+        grid_wizard.addWidget(self.cb_filtro_wizard_columna, 1, 0)
         self.cb_filtro_wizard_operador = QComboBox()
-        h_wizard1.addWidget(self.cb_filtro_wizard_operador)
-        v_wizard.addLayout(h_wizard1)
-
-        # El campo de valor va en su propia fila, a todo el ancho del
-        # recuadro (antes compartía fila con el conector y el botón, y
-        # quedaba muy angosto para escribir -- pedido explícito del
-        # usuario tras ver el resultado a medio ancho de ventana).
+        grid_wizard.addWidget(self.cb_filtro_wizard_operador, 1, 1)
         self.txt_filtro_wizard_valor = QLineEdit()
         self._reg(self.txt_filtro_wizard_valor, "ph_filtro_wizard_valor", kind="placeholder")
-        v_wizard.addWidget(self.txt_filtro_wizard_valor)
-
-        h_wizard2 = QHBoxLayout()
-        h_wizard2.addWidget(self._reg(QLabel(), "lbl_filtro_wizard_conector"))
+        grid_wizard.addWidget(self.txt_filtro_wizard_valor, 1, 2)
         self.cb_filtro_wizard_conector = QComboBox()
-        h_wizard2.addWidget(self.cb_filtro_wizard_conector)
-        btn_agregar_condicion = self._reg(QPushButton(), "btn_agregar_condicion_filtro")
+        grid_wizard.addWidget(self.cb_filtro_wizard_conector, 1, 3)
+        btn_agregar_condicion = QPushButton("+")
+        btn_agregar_condicion.setStyleSheet(ESTILO_BTN_ICONO)
+        btn_agregar_condicion.setFixedWidth(34)
         self._reg(btn_agregar_condicion, "tip_btn_agregar_condicion_filtro", kind="tooltip")
         btn_agregar_condicion.clicked.connect(self._agregar_condicion_filtro_preview)
-        h_wizard2.addWidget(btn_agregar_condicion)
-        v_wizard.addLayout(h_wizard2)
-
+        grid_wizard.addWidget(btn_agregar_condicion, 1, 4)
         self._fill_filtro_wizard_combos()
-        v_qp.addWidget(grp_filtro_wizard)
+        v_qp.addLayout(grid_wizard)
 
-        # Botones de acción sobre el filtro, repartidos en dos filas
-        # (Filtrar/Limpiar/Mapa -- correr o ver el filtro -- y Marcar/
-        # Desmarcar -- tocar "Incluir" en bloque) desde la v2.62.0, en
-        # vez de una sola fila de 5 botones.
-        fila_filtro1 = QHBoxLayout()
-        btn_filtrar = self._reg(QPushButton(), "btn_apply_preview_filter")
-        self._reg(btn_filtrar, "tip_btn_apply_preview_filter", kind="tooltip")
-        btn_filtrar.clicked.connect(self._ejecutar_filtro_preview)
-        fila_filtro1.addWidget(btn_filtrar)
-        btn_quitar_filtro = self._reg(QPushButton(), "btn_clear_preview_filter")
-        self._reg(btn_quitar_filtro, "tip_btn_clear_preview_filter", kind="tooltip")
-        btn_quitar_filtro.clicked.connect(self._quitar_filtro_preview)
-        fila_filtro1.addWidget(btn_quitar_filtro)
-        btn_mapa_filtro = self._reg(QPushButton(), "btn_show_filtered_on_map")
-        self._reg(btn_mapa_filtro, "tip_btn_show_filtered_on_map", kind="tooltip")
-        btn_mapa_filtro.clicked.connect(self._mostrar_filtro_preview_en_mapa)
-        fila_filtro1.addWidget(btn_mapa_filtro)
-        v_qp.addLayout(fila_filtro1)
+        # Condición actual en lenguaje llano + "Modo Desarrollador (SQL)":
+        # el cuadro de texto con la condición SQL cruda queda OCULTO por
+        # defecto detrás de un botón desplegable para no abrumar.
+        self.lbl_filtro_actual = QLabel("")
+        self.lbl_filtro_actual.setWordWrap(True)
+        self.lbl_filtro_actual.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_qp.addWidget(self.lbl_filtro_actual)
 
-        fila_filtro2 = QHBoxLayout()
-        btn_marcar = self._reg(QPushButton(), "btn_mark_include_filtered")
-        self._reg(btn_marcar, "tip_btn_mark_include_filtered", kind="tooltip")
-        btn_marcar.clicked.connect(lambda: self._marcar_incluir_filtrados(True))
-        fila_filtro2.addWidget(btn_marcar)
-        btn_desmarcar = self._reg(QPushButton(), "btn_unmark_include_filtered")
-        self._reg(btn_desmarcar, "tip_btn_unmark_include_filtered", kind="tooltip")
-        btn_desmarcar.clicked.connect(lambda: self._marcar_incluir_filtrados(False))
-        fila_filtro2.addWidget(btn_desmarcar)
-        v_qp.addLayout(fila_filtro2)
+        self.btn_sql_dev = QPushButton()
+        self.btn_sql_dev.setCheckable(True)
+        self.btn_sql_dev.setChecked(False)
+        self.btn_sql_dev.setFlat(True)
+        self.btn_sql_dev.setStyleSheet(ESTILO_BTN_ENLACE)
+        self._reg(self.btn_sql_dev, "tip_btn_sql_dev", kind="tooltip")
+        self.txt_filtro_preview = QLineEdit()
+        self._reg(self.txt_filtro_preview, "tip_preview_filter_placeholder", kind="placeholder")
+        self.txt_filtro_preview.setVisible(False)
+        self.btn_sql_dev.toggled.connect(self.txt_filtro_preview.setVisible)
+        self.btn_sql_dev.toggled.connect(lambda _c: self._actualizar_texto_boton_sql_dev())
+        self.txt_filtro_preview.textChanged.connect(lambda _t: self._actualizar_lbl_filtro_actual())
+        self._actualizar_texto_boton_sql_dev()
+        self._actualizar_lbl_filtro_actual()
+        v_qp.addWidget(self.btn_sql_dev)
+        v_qp.addWidget(self.txt_filtro_preview)
+
+        # Barra de acciones compacta: Filtrar / Limpiar / Mapa / Marcar /
+        # Desmarcar, con ícono (glifo) + texto corto.
+        fila_acciones = QHBoxLayout()
+        fila_acciones.setSpacing(4)
+        for key_texto, key_tip, handler in (
+            ("tb_filter", "tip_btn_apply_preview_filter", self._ejecutar_filtro_preview),
+            ("tb_clear", "tip_btn_clear_preview_filter", self._quitar_filtro_preview),
+            ("tb_map", "tip_btn_show_filtered_on_map", self._mostrar_filtro_preview_en_mapa),
+            ("tb_mark", "tip_btn_mark_include_filtered", lambda: self._marcar_incluir_filtrados(True)),
+            ("tb_unmark", "tip_btn_unmark_include_filtered", lambda: self._marcar_incluir_filtrados(False)),
+        ):
+            tb = QToolButton()
+            tb.setStyleSheet(ESTILO_BTN_BARRA)
+            self._reg(tb, key_texto)
+            self._reg(tb, key_tip, kind="tooltip")
+            tb.clicked.connect(lambda _checked=False, h=handler: h())
+            fila_acciones.addWidget(tb)
+        fila_acciones.addStretch(1)
+        v_qp.addLayout(fila_acciones)
 
         self.lbl_filtro_preview_resumen = QLabel("")
         self.lbl_filtro_preview_resumen.setWordWrap(True)
         v_qp.addWidget(self.lbl_filtro_preview_resumen)
+        v_qp.addStretch(1)
 
+        # -- Tarjeta 3: Formato y Finalización --------------------------
+        grp_finalizar = self._reg(QGroupBox(), "grp_finalizar_card", kind="title")
+        grp_finalizar.setObjectName("card")
+        v_fin = QVBoxLayout(grp_finalizar)
+
+        # Arriba: formato de exportación + botón Exportar, en una fila.
         fila_export_preview = QHBoxLayout()
         fila_export_preview.addWidget(self._reg(QLabel(), "lbl_export_format"))
         self.cb_export_preview_formato = QComboBox()
         self._fill_export_preview_format_combo()
-        fila_export_preview.addWidget(self.cb_export_preview_formato)
+        fila_export_preview.addWidget(self.cb_export_preview_formato, 1)
         btn_exportar_preview = self._reg(QPushButton(), "btn_export_preview")
         self._reg(btn_exportar_preview, "tip_btn_export_preview", kind="tooltip")
         btn_exportar_preview.clicked.connect(self._exportar_preview_actual)
         fila_export_preview.addWidget(btn_exportar_preview)
-        fila_export_preview.addStretch(1)
-        v_qp.addLayout(fila_export_preview)
+        v_fin.addLayout(fila_export_preview)
 
-        # -- Sección: "Finalizar importación" -- verificar duplicados,
-        # crear capa, subir, y el registro colapsable -- agrupados en un
-        # solo recuadro, emparejado con "Editar en bloque" (ambas
-        # secciones chicas) en la última fila -- ver el armado de las 3
-        # filas más abajo.
-        grp_finalizar = self._reg(QGroupBox(), "grp_finalizar_importacion", kind="title")
-        v_fin = QVBoxLayout(grp_finalizar)
-
-        btn_verificar_duplicados = self._reg(QPushButton(), "btn_check_db_duplicates")
-        self._reg(btn_verificar_duplicados, "tip_btn_check_db_duplicates", kind="tooltip")
-        btn_verificar_duplicados.clicked.connect(self.verificar_duplicados_bd)
-        v_fin.addWidget(btn_verificar_duplicados)
-
-        self.chk_crear_capa_import = self._reg(QCheckBox(), "chk_create_layer")
+        # Interruptor moderno (Toggle Switch) en vez de casilla.
+        self.chk_crear_capa_import = self._reg(ToggleSwitch(), "chk_create_layer")
         self.chk_crear_capa_import.setChecked(True)
         v_fin.addWidget(self.chk_crear_capa_import)
 
-        btn_subir = self._reg(QPushButton(), "btn_upload_dc")
-        self._reg(btn_subir, "tip_btn_upload_dc", kind="tooltip")
-        btn_subir.clicked.connect(self.subir_dc_preview)
-        v_fin.addWidget(btn_subir)
-
-        # El "Registro" queda oculto por defecto (pedido explícito: ocupa
-        # espacio fijo por algo que el usuario normalmente no necesita
-        # ver) -- un botón con forma de interruptor lo despliega/oculta.
-        # `self.log_importar` sigue recibiendo texto (`appendPlainText`)
-        # esté visible o no, así que nada de lo que ya escribe el resto
-        # del flujo de importación (avisos, resultado de la subida, etc.)
-        # se pierde por estar oculto -- sólo no se ve hasta que el
-        # usuario lo pida.
+        # Acciones secundarias: verificar duplicados y registro. El
+        # "Registro" queda oculto por defecto (`self.log_importar` sigue
+        # recibiendo texto -- `appendPlainText` -- esté visible o no, así
+        # que nada de lo que escribe el flujo de importación se pierde).
+        fila_secundaria = QHBoxLayout()
+        btn_verificar_duplicados = self._reg(QPushButton(), "btn_check_db_duplicates")
+        self._reg(btn_verificar_duplicados, "tip_btn_check_db_duplicates", kind="tooltip")
+        btn_verificar_duplicados.clicked.connect(self.verificar_duplicados_bd)
+        fila_secundaria.addWidget(btn_verificar_duplicados)
         self.btn_toggle_log_importar = QPushButton()
         self.btn_toggle_log_importar.setCheckable(True)
         self.btn_toggle_log_importar.setChecked(False)
+        fila_secundaria.addWidget(self.btn_toggle_log_importar)
+        v_fin.addLayout(fila_secundaria)
+
         self.log_importar = QPlainTextEdit()
         self.log_importar.setReadOnly(True)
         self.log_importar.setVisible(False)
+        self.log_importar.setMinimumHeight(90)
         self.btn_toggle_log_importar.toggled.connect(self.log_importar.setVisible)
         self.btn_toggle_log_importar.toggled.connect(lambda _checked: self._actualizar_texto_boton_log_importar())
         self._actualizar_texto_boton_log_importar()
-        v_fin.addWidget(self.btn_toggle_log_importar)
         v_fin.addWidget(self.log_importar)
 
-        # -- Armado de las 3 filas de secciones emparejadas -------------
-        # Pedido explícito del usuario, tras ver capturas con huecos
-        # grandes entre secciones ("no hay que dejar partes vacias entre
-        # las secciones, no es estetico"): emparejar por TAMAÑO de
-        # contenido en vez de por orden de flujo (que era Archivos+
-        # Comparación / Corrección+Editar en bloque / Consultar+
-        # Finalizar) -- esa combinación dejaba huecos enormes porque
-        # "Consultar / filtrar antes de subir" (con el asistente de
-        # filtro completo) es, por lejos, la sección más alta de la
-        # pestaña, y quedaba pareada con "Finalizar importación", la más
-        # chica. Reagrupado así:
-        #   Fila 1: Archivos de campo | Consultar / filtrar antes de
-        #           subir -- las dos secciones más altas, incluida la
-        #           lista de archivos que ahora puede estirarse
-        #           (`lst_dc` con stretch, arriba) para igualar el alto
-        #           real de la otra sin dejar hueco.
-        #   Fila 2: Comparación con PREPLOT | Corrección de base RTK --
-        #           dos secciones medianas y relacionadas entre sí
-        #           (ambas comparan/ajustan la posición de los puntos).
-        #   Fila 3: Editar en bloque | Finalizar importación -- las dos
-        #           secciones más chicas, bien emparejadas en tamaño.
-        # Mismo mecanismo 50/50 real de "Base de Datos" (v2.54.0) para
-        # las tres: `QSizePolicy.Ignored` en ambos recuadros + un
-        # `QGridLayout` de dos columnas con `setColumnStretch` igual.
-        for g in (grp_archivos, grp_query_preview, grp_comp, self.grp_correccion_base, grp_bulk, grp_finalizar):
+        v_fin.addStretch(1)
+
+        # "Subir": acción principal (CTA) de la pantalla, de ancho
+        # completo. Texto/color/tooltip los maneja `_actualizar_boton_subir`
+        # (verde "Subir" -> rojo "Subir/Retirar" tras una subida), por eso
+        # no se registra con `_reg`: `retranslate_ui` lo vuelve a aplicar.
+        self.btn_subir_dc = QPushButton()
+        self.btn_subir_dc.setMinimumHeight(40)
+        self.btn_subir_dc.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
+        self.btn_subir_dc.clicked.connect(self._on_click_subir)
+        v_fin.addWidget(self.btn_subir_dc)
+        self._actualizar_boton_subir()
+
+        # -- Armado -----------------------------------------------------
+        for g in (grp_origen, grp_filtrado, grp_finalizar, self.grp_correccion_base):
             g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
+        for a in (self.acc_preplot, self.acc_bulk):
+            a.setSizePolicy(SIZE_POLICY_IGNORED, a.sizePolicy().verticalPolicy())
 
-        grid_fila1 = QGridLayout()
-        grid_fila1.setColumnStretch(0, 1)
-        grid_fila1.setColumnStretch(1, 1)
-        grid_fila1.addWidget(grp_archivos, 0, 0)
-        grid_fila1.addWidget(grp_query_preview, 0, 1)
-        v.addLayout(grid_fila1)
+        # Dos columnas de igual ancho. Izquierda: "1. Archivo de Origen"
+        # (la lista de archivos absorbe el alto sobrante) + acordeones
+        # PREPLOT / Editar en bloque + resumen + Corrección de base (si
+        # hay base). Derecha: "2. Filtrado Avanzado" (absorbe el alto
+        # sobrante) + "3. Formato y Finalización" con el CTA "Subir"
+        # abajo, pegado a la tabla. Así las dos columnas quedan parejas
+        # sin huecos vacíos.
+        col_izq = QVBoxLayout()
+        col_izq.setSpacing(6)
+        col_izq.addWidget(grp_origen, 1)
+        col_izq.addWidget(self.acc_preplot)
+        col_izq.addWidget(self.acc_bulk)
+        col_izq.addWidget(self.lbl_preview_resumen)
+        col_izq.addWidget(self.grp_correccion_base)
+        col_der = QVBoxLayout()
+        col_der.setSpacing(6)
+        col_der.addWidget(grp_filtrado, 1)
+        col_der.addWidget(grp_finalizar)
+        grid_tarjetas = QGridLayout()
+        grid_tarjetas.setColumnStretch(0, 1)
+        grid_tarjetas.setColumnStretch(1, 1)
+        grid_tarjetas.setHorizontalSpacing(10)
+        grid_tarjetas.addLayout(col_izq, 0, 0)
+        grid_tarjetas.addLayout(col_der, 0, 1)
+        v.addLayout(grid_tarjetas)
 
-        # Fila 2: "Corrección de base RTK" puede estar oculta (sin base
-        # RTK detectada en los archivos cargados) -- en ese caso
-        # "Comparación con PREPLOT" pasa a ocupar las DOS columnas (en
-        # vez de dejar la mitad derecha de la fila en blanco, que era
-        # justo el hueco más llamativo de las capturas que mandó el
-        # usuario) -- ver `_actualizar_colspan_correccion_base`, llamado
-        # cada vez que cambia la visibilidad de "Corrección de base RTK"
-        # desde `_actualizar_seccion_correccion_base`.
-        self._grid_fila_comparacion = QGridLayout()
-        self._grid_fila_comparacion.setColumnStretch(0, 1)
-        self._grid_fila_comparacion.setColumnStretch(1, 1)
-        self._grp_comp_preplot_import = grp_comp
-        v.addLayout(self._grid_fila_comparacion)
-        self._actualizar_colspan_correccion_base()
+        # Aspecto de "tarjeta" (borde fino redondeado, con los colores de
+        # la paleta del tema para que sirva en claro y en oscuro).
+        w.setStyleSheet(ESTILO_TARJETAS)
 
-        grid_fila3 = QGridLayout()
-        grid_fila3.setColumnStretch(0, 1)
-        grid_fila3.setColumnStretch(1, 1)
-        grid_fila3.addWidget(grp_bulk, 0, 0)
-        grid_fila3.addWidget(grp_finalizar, 0, 1)
-        v.addLayout(grid_fila3)
-
-        # -- Previsualización: la ÚNICA sección que ocupa el ancho
-        # completo de la ventana (pedido explícito del usuario) --
-        # siempre debajo de las tres filas de secciones emparejadas de
-        # arriba.
-        self.tbl_import_preview = QTableWidget(0, PREVIEW_N_COLS)
+        # -- Previsualización: ocupa todo el ancho y, con los bloques de
+        # arriba colapsados, todo el alto que quede libre (stretch 1).
+        # Las columnas "Incluir" y "Nombre" quedan FIJAS a la izquierda al
+        # desplazarse en horizontal (pedido explícito del usuario, ver
+        # `tabla_fija.py`) y "Comentario" se muestra justo al lado de
+        # "Descriptor" -- sólo cambia el ORDEN VISUAL (`moveSection`): los
+        # índices lógicos `PREVIEW_COL_*` no cambian, así que ninguna otra
+        # parte del código (edición, exportación, consultas) se ve afectada.
+        self.tbl_import_preview = TablaColumnasFijas(
+            0, PREVIEW_N_COLS, fijas=(PREVIEW_COL_INCLUDE, PREVIEW_COL_NOMBRE),
+        )
+        self.tbl_import_preview.setMinimumHeight(340)
         self.tbl_import_preview.setHorizontalHeaderLabels(self._import_preview_headers())
         self.tbl_import_preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        _hdr_preview = self.tbl_import_preview.horizontalHeader()
+        _hdr_preview.moveSection(
+            _hdr_preview.visualIndex(PREVIEW_COL_COMENTARIO),
+            _hdr_preview.visualIndex(PREVIEW_COL_DESCRIPTOR) + 1,
+        )
         # Recalcula "Alt. WGS84 (m)"/"Elevación ortométrica" en vivo al
         # editar la celda "Altura de antena" -- ver
         # `_on_preview_item_changed`, pedido explícito del usuario.
         self.tbl_import_preview.itemChanged.connect(self._on_preview_item_changed)
-        v.addWidget(self.tbl_import_preview)
+        v.addWidget(self.tbl_import_preview, 1)
 
         return w
+
+    # -- Rediseño v2.63.0: textos dinámicos de acordeones / botones ------
+    def _actualizar_resumen_acordeones(self):
+        """Refresca los títulos + resumen de estado de los acordeones
+        PREPLOT y Editar en bloque (cerrados, esa línea es lo único que
+        se ve de ellos)."""
+        if hasattr(self, "acc_preplot") and hasattr(self, "chk_aproximado_import"):
+            tol = self.spn_tolerancia_import.value()
+            aprox = self.t("acc_yes") if self.chk_aproximado_import.isChecked() else self.t("acc_no")
+            resumen_prev = self._last_import_preview_summary
+            if resumen_prev is None:
+                estado = self.t("acc_state_waiting")
+            elif resumen_prev[3]:
+                estado = self.t("acc_state_active")
+            else:
+                estado = self.t("acc_state_no_preplot")
+            texto = self.t("acc_preplot_summary", tol=f"{tol:.3f}", aprox=aprox, estado=estado)
+            self.acc_preplot.set_textos(self.t("acc_preplot_title"), texto)
+        if hasattr(self, "acc_bulk") and hasattr(self, "txt_descriptor_bulk"):
+            if self.cb_bulk_campo.currentData() == "descriptor":
+                valor = self.txt_descriptor_bulk.text().strip() or self.t("acc_empty")
+                campo = self.t("opt_bulk_field_descriptor")
+            else:
+                valor = f"{self.spn_hi_bulk.value():.3f} m"
+                campo = self.t("opt_bulk_field_hi")
+            self.acc_bulk.set_textos(self.t("acc_bulk_title"), f"{campo} = {valor}")
+
+    def _actualizar_texto_boton_sql_dev(self):
+        key = "btn_sql_dev_hide" if self.btn_sql_dev.isChecked() else "btn_sql_dev_show"
+        self.btn_sql_dev.setText(self.t(key))
+
+    def _actualizar_lbl_filtro_actual(self):
+        if not hasattr(self, "lbl_filtro_actual"):
+            return
+        condicion = self.txt_filtro_preview.text().strip()
+        self.lbl_filtro_actual.setText(self.t("lbl_filtro_actual", c=condicion or self.t("acc_none")))
+        self.lbl_filtro_actual.setToolTip(condicion)
 
     def _actualizar_texto_boton_log_importar(self):
         key = "btn_log_hide" if self.btn_toggle_log_importar.isChecked() else "btn_log_show"
@@ -4131,7 +5223,7 @@ class GNSSeismicController(QWidget):
                 resumen += " " + self.t("log_dc_base_detectada", base=base_names[0])
             elif len(base_names) > 1:
                 resumen += " " + self.t("log_dc_bases_multiples", n=len(base_names))
-            self.lst_dc.addItem(resumen)
+            self._agregar_item_campo(resumen)
             if dc.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(dc.warnings)))
 
@@ -4162,7 +5254,7 @@ class GNSSeismicController(QWidget):
             resumen = self.t(
                 "log_hitarget_summary", name=os.path.basename(p), n=hf.n_points, base=n_base,
             )
-            self.lst_dc.addItem(resumen)
+            self._agregar_item_campo(resumen)
             if hf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(hf.warnings)))
             # Aviso explícito en el log (no sólo en la nota estática de
@@ -4193,7 +5285,7 @@ class GNSSeismicController(QWidget):
                 "log_chcnav_summary", name=os.path.basename(p), n=cf.n_points,
                 con_calidad=n_con_calidad, base=n_base,
             )
-            self.lst_dc.addItem(resumen)
+            self._agregar_item_campo(resumen)
             if cf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(cf.warnings)))
 
@@ -4228,12 +5320,68 @@ class GNSSeismicController(QWidget):
                 "log_surpad_summary", name=os.path.basename(p), n=cf.n_points,
                 con_calidad=n_con_calidad, base=n_base,
             )
-            self.lst_dc.addItem(resumen)
+            self._agregar_item_campo(resumen)
             if cf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(cf.warnings)))
                 # En SurPad el detalle importa (puntos con posible
                 # inclinación, bases renombradas): se muestra cada aviso.
                 for aviso in cf.warnings:
+                    self.log_importar.appendPlainText(f"    - {aviso}")
+
+    def agregar_sourcelink(self):
+        # CSV de SourceLink (control de vibradores sísmicos): una fila por
+        # disparo con la posición GNSS del vibro. A diferencia del resto de
+        # formatos, trae el número de vibrador por fila ("Unit ID"), que se
+        # sube como `Surveyor` de cada punto -- por eso el campo "Surveyor"
+        # junto al archivo queda desactivado (ver `_agregar_item_campo`).
+        # Ver el análisis completo del formato en `sourcelink_parser.py`.
+        paths, _ = QFileDialog.getOpenFileNames(self, self.t("dlg_add_sourcelink_title"), "", self.t("filter_sourcelink_csv"))
+        if not paths:
+            return
+        for p in paths:
+            try:
+                sf = sourcelink_parser.parse_sourcelink_file(p)
+            except Exception as e:
+                QMessageBox.warning(self, self.t("warn_read_file_title"), f"{os.path.basename(p)}:\n{e}")
+                continue
+            self.sourcelink_files.append(sf)
+            self._campo_file_refs.append(("SOURCELINK", sf.path))
+            resumen = self.t(
+                "log_sourcelink_summary", name=os.path.basename(p), n=sf.n_points,
+                unidades=len(sf.units), anulados=sf.n_void,
+            )
+            self._agregar_item_campo(resumen)
+            if sf.warnings:
+                self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(sf.warnings)))
+                for aviso in sf.warnings:
+                    self.log_importar.appendPlainText(f"    - {aviso}")
+
+    def agregar_inova(self):
+        # Libro Excel (.xls) de Inova (vibradores sísmicos): una fila COG
+        # (centro de grupo de los vibros) por VP. Es el algoritmo de la
+        # macro `ExtraerCOG_GPSeismic` del usuario, hecho en Python -- ver
+        # `inova_parser.py`. Como SourceLink, trae el/los vibro(s) de cada
+        # punto y se suben como `Surveyor` (el campo junto al archivo no
+        # aplica). La altura de antena se resta con la columna HI.
+        paths, _ = QFileDialog.getOpenFileNames(self, self.t("dlg_add_inova_title"), "", self.t("filter_inova_xls"))
+        if not paths:
+            return
+        for p in paths:
+            try:
+                inf = inova_parser.parse_inova_file(p)
+            except Exception as e:
+                QMessageBox.warning(self, self.t("warn_read_file_title"), f"{os.path.basename(p)}:\n{e}")
+                continue
+            self.inova_files.append(inf)
+            self._campo_file_refs.append(("INOVA", inf.path))
+            resumen = self.t(
+                "log_inova_summary", name=os.path.basename(p), n=inf.n_points,
+                unidades=len(inf.units), fail=inf.n_fail,
+            )
+            self._agregar_item_campo(resumen)
+            if inf.warnings:
+                self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(inf.warnings)))
+                for aviso in inf.warnings:
                     self.log_importar.appendPlainText(f"    - {aviso}")
 
     def agregar_stonex(self):
@@ -4269,9 +5417,68 @@ class GNSSeismicController(QWidget):
             resumen = self.t(
                 "log_stonex_summary", name=os.path.basename(p), n=sf.n_points,
             )
-            self.lst_dc.addItem(resumen)
+            self._agregar_item_campo(resumen)
             if sf.warnings:
                 self.log_importar.appendPlainText(self.t("log_dc_warnings", name=os.path.basename(p), n=len(sf.warnings)))
+
+    def _surveyor_de_fila(self, fila):
+        """Surveyor que se subirá para una fila de la previsualización: el
+        propio de la fila (Unit ID del vibro, SourceLink) o, si no trae, el
+        escrito junto a su archivo."""
+        return (fila.get("surveyor") or self._surveyor_por_archivo.get((fila.get("origen"), fila.get("archivo_path")), "")).strip()
+
+    def _refrescar_columna_surveyor(self):
+        """Actualiza la columna Surveyor de la previsualización (p.ej. al
+        escribir el Surveyor de un archivo) sin reconstruir la tabla."""
+        tbl = getattr(self, "tbl_import_preview", None)
+        if tbl is None or tbl.columnCount() <= PREVIEW_COL_SURVEYOR:
+            return
+        for row, fila in enumerate(self._import_preview):
+            if row < tbl.rowCount():
+                self._set_preview_readonly_cell(row, PREVIEW_COL_SURVEYOR, self._surveyor_de_fila(fila) or "-")
+
+    def _agregar_item_campo(self, resumen):
+        """Agrega a `lst_dc` la fila de un archivo de campo recién cargado
+        (el último de `self._campo_file_refs`): el resumen del archivo a la
+        izquierda y, a su derecha, un campo de texto "Surveyor" propio de
+        ese archivo -- si se cargan varios archivos de topógrafos distintos,
+        al subir a POSTPLOT cada punto queda con el topógrafo de SU archivo.
+        La fila sigue siendo un `QListWidgetItem` normal (selección y
+        "Quitar" funcionan igual que antes)."""
+        clave = self._campo_file_refs[-1] if self._campo_file_refs else None
+        item = QListWidgetItem()
+        self.lst_dc.addItem(item)
+        fila = QWidget()
+        h = QHBoxLayout(fila)
+        h.setContentsMargins(6, 2, 6, 2)
+        lbl = QLabel(resumen)
+        lbl.setToolTip(resumen)
+        # Ignored: el resumen (largo) se recorta en vez de empujar el campo
+        # Surveyor fuera de la vista; el texto completo queda en el tooltip.
+        lbl.setSizePolicy(SIZE_POLICY_IGNORED, lbl.sizePolicy().verticalPolicy())
+        h.addWidget(lbl, 1)
+        h.addWidget(QLabel("Surveyor:"))
+        edt = QLineEdit()
+        edt.setPlaceholderText("Surveyor")
+        edt.setMinimumWidth(130)
+        edt.setMaximumWidth(220)
+        edt.setToolTip(self.t("tip_surveyor_archivo"))
+        if clave is not None and clave[0] in ("SOURCELINK", "INOVA"):
+            # SourceLink (Unit ID) e Inova (vibros del VP) traen el/los
+            # vibrador(es) en cada fila y se suben como Surveyor de cada
+            # punto: el campo no aplica.
+            edt.setEnabled(False)
+            edt.setPlaceholderText(self.t("ph_surveyor_unit_id"))
+            edt.setToolTip(self.t("tip_surveyor_sourcelink" if clave[0] == "SOURCELINK" else "tip_surveyor_inova"))
+        elif clave is not None:
+            edt.setText(self._surveyor_por_archivo.get(clave, ""))
+            edt.textChanged.connect(
+                lambda texto, k=clave: self._surveyor_por_archivo.__setitem__(k, texto.strip())
+            )
+            edt.textChanged.connect(lambda _t: self._refrescar_columna_surveyor())
+        h.addWidget(edt)
+        item.setSizeHint(fila.sizeHint())
+        self.lst_dc.setItemWidget(item, fila)
 
     def quitar_dc(self):
         removidos = []  # [(origen, path), ...] realmente quitados en esta llamada
@@ -4281,6 +5488,8 @@ class GNSSeismicController(QWidget):
             if row >= len(self._campo_file_refs):
                 continue
             origen, path = self._campo_file_refs.pop(row)
+            if (origen, path) not in self._campo_file_refs:
+                self._surveyor_por_archivo.pop((origen, path), None)
             if origen == "DC":
                 self.dc_files = [f for f in self.dc_files if f.path != path]
             elif origen == "HITARGET":
@@ -4291,6 +5500,10 @@ class GNSSeismicController(QWidget):
                 self.stonex_files = [f for f in self.stonex_files if f.path != path]
             elif origen == "SURPAD":
                 self.surpad_files = [f for f in self.surpad_files if f.path != path]
+            elif origen == "SOURCELINK":
+                self.sourcelink_files = [f for f in self.sourcelink_files if f.path != path]
+            elif origen == "INOVA":
+                self.inova_files = [f for f in self.inova_files if f.path != path]
             removidos.append((origen, path))
 
         if not removidos:
@@ -4359,7 +5572,7 @@ class GNSSeismicController(QWidget):
         un archivo de campo nuevo"."""
         if not self._require_project():
             return
-        if not self.dc_files and not self.hitarget_files and not self.chcnav_files and not self.stonex_files and not self.surpad_files:
+        if not self.dc_files and not self.hitarget_files and not self.chcnav_files and not self.stonex_files and not self.surpad_files and not self.sourcelink_files and not self.inova_files:
             QMessageBox.information(self, self.t("info_nothing_to_import_title"), self.t("info_nothing_to_import_body"))
             return
 
@@ -4907,6 +6120,121 @@ class GNSSeismicController(QWidget):
                     ),
                 })
 
+        # SourceLink (CSV de posiciones de vibros, ver `sourcelink_parser.py`):
+        # cada fila es un disparo de un vibrador. Track/Bin salen de las
+        # columnas Line/Station del archivo (no de la heurística de dígitos),
+        # el Surveyor es el Unit ID (número del vibro) de CADA punto, y el
+        # comentario por defecto es el "Comment" del operador.
+        for sl_idx, sf in enumerate(self.sourcelink_files):
+            for point_idx, p in enumerate(sf.points):
+                previa = ediciones_previas.get(("SOURCELINK", sf.path, p.line_no))
+                # Altura de antena (HI) editable, por defecto 0 (decisión del
+                # usuario: en campo a veces no se configura la altura de la
+                # antena del vibro, ~2.73 m, y se decide después si se
+                # corrige). `p.height` es la altura elipsoidal a nivel de
+                # antena tal como viene en el CSV; la altura final es
+                # `p.height - HI` (y la ortométrica se recalcula con ella),
+                # igual que Trimble .dc -- ver `_recalcular_altura_wgs84_fila`.
+                hi_sl = previa.get("hi") if previa else 0.0
+                altura_sl = p.height - (hi_sl or 0.0)
+                geoid_h = None
+                local_h = None
+                if aplicar_geoide:
+                    geoid_h = self._sample_geoid_undulation(p.lon, p.lat)
+                    if geoid_h is not None:
+                        local_h = geoid_utils.orthometric_height(altura_sl, geoid_h)
+                modo_key, modo_valor = _survey_mode_key_valor(p.quality)
+                filas.append({
+                    "origen": "SOURCELINK", "dc_idx": sl_idx, "point_idx": point_idx, "line_no": p.line_no,
+                    "archivo": os.path.basename(sf.path), "archivo_path": sf.path,
+                    "job_name": None, "instrument": "SourceLink",
+                    "receiver_type": None, "receiver_sn": None,
+                    "tipo": p.tipo,
+                    "calidad": (p.quality if p.quality else self.t("calidad_nd")),
+                    "modo_texto": (f"SourceLink ({p.quality})" if p.quality else "SourceLink"),
+                    "nombre": (previa["nombre"] if previa else p.name),
+                    "nombre_original": p.name,
+                    "is_base": False,
+                    "lat": p.lat, "lon": p.lon, "altura_wgs84": altura_sl,
+                    "altura_antena_cruda": p.height, "hi_vacio_es_cero": True,
+                    "track": p.track, "bin": p.bin,
+                    "surveyor": p.surveyor,
+                    "geoid_h": geoid_h, "local_h": local_h,
+                    "hi": hi_sl,
+                    "comentario": (previa.get("comentario") if previa else p.comment),
+                    "incluir": (previa.get("incluir", True) if previa else True),
+                    "subido": (previa.get("subido", False) if previa else False),
+                    "match": None,
+                    "n_sats": p.n_sats, "pdop": p.pdop, "hdop": p.hdop, "vdop": p.vdop,
+                    "n_epochs": None, "occupation_seconds": None,
+                    "gps_baseline_m": None, "gps_base_station": None,
+                    "julian_date_local": p.julian_date_local,
+                    "survey_time_local": p.survey_time_local,
+                    "survey_time_gmt": p.survey_time_gmt,
+                    "descriptor": (previa.get("descriptor") if previa else ""),
+                    "survey_mode_text": (
+                        previa.get("survey_mode_text") if previa else SURVEY_MODE_TEXTO_EN[modo_key]
+                    ),
+                    "survey_mode_value": (previa.get("survey_mode_value") if previa else modo_valor),
+                })
+
+        # Inova (.xls, ver `inova_parser.py`): un punto por VP (fila COG).
+        # Igual que SourceLink el Surveyor es el/los vibro(s) del punto
+        # ("7 y 8") y Track/Bin salen de SLine/Flag. La altura del archivo
+        # es la elevación a nivel de ANTENA: se guarda cruda en
+        # `altura_antena_cruda` y `altura_wgs84 = cruda - HI` con HI = la
+        # altura de antena del grupo (la del archivo o 2.73 m, como la
+        # macro del usuario), editable -- misma mecánica que Trimble .dc
+        # (`_recalcular_altura_wgs84_fila`); HI en blanco = 0.
+        for in_idx, inf in enumerate(self.inova_files):
+            for point_idx, p in enumerate(inf.points):
+                previa = ediciones_previas.get(("INOVA", inf.path, p.line_no))
+                hi_in = previa.get("hi") if previa else p.antenna_height
+                altura_in = p.height - (hi_in or 0.0)
+                geoid_h = None
+                local_h = None
+                if aplicar_geoide:
+                    geoid_h = self._sample_geoid_undulation(p.lon, p.lat)
+                    if geoid_h is not None:
+                        local_h = geoid_utils.orthometric_height(altura_in, geoid_h)
+                modo_key, modo_valor = _inova_modo_key_valor(p.quality)
+                filas.append({
+                    "origen": "INOVA", "dc_idx": in_idx, "point_idx": point_idx, "line_no": p.line_no,
+                    "archivo": os.path.basename(inf.path), "archivo_path": inf.path,
+                    "job_name": None, "instrument": inf.instrument,
+                    "receiver_type": None, "receiver_sn": None,
+                    "tipo": p.tipo,
+                    "calidad": (p.quality if p.quality else self.t("calidad_nd")),
+                    "modo_texto": (f"Inova ({p.quality})" if p.quality else "Inova"),
+                    "nombre": (previa["nombre"] if previa else p.name),
+                    "nombre_original": p.name,
+                    "is_base": False,
+                    "lat": p.lat, "lon": p.lon, "altura_wgs84": altura_in,
+                    "altura_antena_cruda": p.height, "hi_vacio_es_cero": True,
+                    "track": p.track, "bin": p.bin,
+                    "surveyor": p.surveyor,
+                    "geoid_h": geoid_h, "local_h": local_h,
+                    "hi": hi_in,
+                    "comentario": (
+                        previa.get("comentario") if previa
+                        else (f"Inova: {p.status}" if p.status and p.status.lower() != "pass" else "")
+                    ),
+                    "incluir": (previa.get("incluir", True) if previa else True),
+                    "subido": (previa.get("subido", False) if previa else False),
+                    "match": None,
+                    "n_sats": p.n_sats, "pdop": p.pdop, "hdop": p.hdop, "vdop": p.vdop,
+                    "n_epochs": p.n_readings, "occupation_seconds": None,
+                    "gps_baseline_m": None, "gps_base_station": p.base_station,
+                    "julian_date_local": p.julian_date,
+                    "survey_time_local": p.survey_time_local,
+                    "survey_time_gmt": p.survey_time_gmt,
+                    "descriptor": (previa.get("descriptor") if previa else ""),
+                    "survey_mode_text": (
+                        previa.get("survey_mode_text") if previa else SURVEY_MODE_TEXTO_EN[modo_key]
+                    ),
+                    "survey_mode_value": (previa.get("survey_mode_value") if previa else modo_valor),
+                })
+
         for st_idx, sf in enumerate(self.stonex_files):
             for point_idx, p in enumerate(sf.points):
                 track, bin_ = _track_bin_heuristic(p.name, line_digits)
@@ -5090,7 +6418,7 @@ class GNSSeismicController(QWidget):
         total_parseados = len(filas)
         filas = [
             f for f in filas
-            if f.get("origen") in ("CHCNAV", "HITARGET", "STONEX", "SURPAD")
+            if f.get("origen") in ("CHCNAV", "HITARGET", "STONEX", "SURPAD", "SOURCELINK", "INOVA")
             or f.get("is_base")
             or f.get("n_sats") is not None
             or f.get("pdop") is not None
@@ -5247,28 +6575,6 @@ class GNSSeismicController(QWidget):
             )
         return borrador
 
-    def _actualizar_colspan_correccion_base(self):
-        """Ajusta la fila emparejada "Comparación con PREPLOT" / "Corrección
-        de base RTK" de `_build_tab_importar` según si esta última está
-        visible o no: oculta (caso normal -- la mayoría de los archivos
-        no traen ninguna base RTK física que corregir), "Comparación"
-        ocupa las dos columnas de la fila en vez de dejar la mitad
-        derecha completamente en blanco -- pedido explícito del usuario
-        ("no hay que dejar partes vacias entre las secciones, no es
-        estetico"). Se llama al construir la pestaña (con el recuadro
-        todavía oculto por defecto) y cada vez que
-        `_actualizar_seccion_correccion_base` cambia su visibilidad."""
-        if not hasattr(self, "_grid_fila_comparacion"):
-            return
-        grid = self._grid_fila_comparacion
-        grid.removeWidget(self._grp_comp_preplot_import)
-        grid.removeWidget(self.grp_correccion_base)
-        if self.grp_correccion_base.isVisible():
-            grid.addWidget(self._grp_comp_preplot_import, 0, 0, 1, 1)
-            grid.addWidget(self.grp_correccion_base, 0, 1, 1, 1)
-        else:
-            grid.addWidget(self._grp_comp_preplot_import, 0, 0, 1, 2)
-
     def _actualizar_seccion_correccion_base(self, borrador=None):
         """Reconstruye `tbl_correccion_base` a partir de las filas
         `is_base` de `self._import_preview` (una por cada ocupación de
@@ -5288,7 +6594,6 @@ class GNSSeismicController(QWidget):
         borrador = borrador or {}
         bases = [f for f in self._import_preview if f.get("is_base")]
         self.grp_correccion_base.setVisible(bool(bases))
-        self._actualizar_colspan_correccion_base()
         tbl = self.tbl_correccion_base
         tbl.setRowCount(len(bases))
         self._base_correction_rows = []
@@ -5600,9 +6905,44 @@ class GNSSeismicController(QWidget):
         bloquea señales mientras reconstruye la tabla entera para no
         disparar esto miles de veces (una por celda HI) en cada
         previsualización."""
+        if item.column() == PREVIEW_COL_NOMBRE:
+            self._actualizar_derivados_nombre_fila(item.row())
+            return
         if item.column() != PREVIEW_COL_HI:
             return
         self._recalcular_altura_wgs84_fila(item.row())
+
+    def _actualizar_derivados_nombre_fila(self, row):
+        """Al editar la celda "Nombre" de la previsualización, actualiza en
+        vivo "Estación (valor)", "Línea" y "Estaca" (pedido explícito del
+        usuario) con la misma regla que usa GPSeismic y que ya aplicaba
+        `_llenar_tabla_preview` (ver `punto_nombre.derivados_de_nombre`),
+        y guarda esos valores en la fila para que lo que se SUBE a POSTPLOT
+        (Track/Bin/Station_Value) sea lo que se ve en la tabla. Un nombre
+        vacío se rechaza: se restaura el anterior."""
+        if row >= len(self._import_preview):
+            return
+        fila = self._import_preview[row]
+        tbl = self.tbl_import_preview
+        item = tbl.item(row, PREVIEW_COL_NOMBRE)
+        if item is None:
+            return
+        nuevo = item.text().strip()
+        tbl.blockSignals(True)
+        try:
+            if not nuevo:
+                item.setText(fila["nombre"])
+                return
+            fila["nombre"] = nuevo
+            line_digits = int(self.spn_digitos_linea.value()) if hasattr(self, "spn_digitos_linea") else 0
+            station_value, track, bin_ = punto_nombre.derivados_de_nombre(nuevo, line_digits)
+            fila["track"] = track
+            fila["bin"] = bin_
+            self._set_preview_readonly_cell(row, PREVIEW_COL_STATION_VALUE, station_value)
+            self._set_preview_readonly_cell(row, PREVIEW_COL_TRACK, track)
+            self._set_preview_readonly_cell(row, PREVIEW_COL_BIN, bin_)
+        finally:
+            tbl.blockSignals(False)
 
     def _recalcular_altura_wgs84_fila(self, row):
         """Recalcula "Alt. WGS84 (m)"/"Elevación ortométrica" de la fila
@@ -5624,6 +6964,10 @@ class GNSSeismicController(QWidget):
         item_hi = tbl.item(row, PREVIEW_COL_HI)
         nuevo_hi = _parse_optional_float(item_hi.text()) if item_hi is not None else None
         fila["hi"] = nuevo_hi
+        if nuevo_hi is None and fila.get("hi_vacio_es_cero"):
+            # SourceLink: HI en blanco equivale a 0 (sin corrección), la
+            # altura vuelve al valor crudo del archivo.
+            nuevo_hi = 0.0
         if nuevo_hi is None:
             # HI en blanco: no hay con qué corregir -- se deja "Alt. WGS84"
             # como estaba (no se inventa un offset de cero), mismo
@@ -5752,6 +7096,7 @@ class GNSSeismicController(QWidget):
             self.t("col_type"),
             self.t("col_preplot_match"), self.t("col_delta_x"), self.t("col_delta_y"),
             self.t("col_dist_2d"), self.t("col_status"), self.t("col_file"),
+            self.t("col_surveyor"),
         ]
 
     def _correccion_base_headers(self):
@@ -5856,16 +7201,10 @@ class GNSSeismicController(QWidget):
             # (value)/Track/Bin quedan en 0/0/0 en esa base de datos real
             # (fila 4), mientras que un nombre puramente numérico sí los
             # calcula con normalidad.
-            nombre_actual = (fila["nombre"] or "").strip()
-            if nombre_actual.isdigit():
-                station_value = nombre_actual
-                track_calc, bin_calc = _track_bin_heuristic(nombre_actual, line_digits)
-            else:
-                station_value = "0"
-                track_calc, bin_calc = None, None
+            station_value, track_calc, bin_calc = punto_nombre.derivados_de_nombre(fila["nombre"], line_digits)
             self._set_preview_readonly_cell(row, PREVIEW_COL_STATION_VALUE, station_value)
-            self._set_preview_readonly_cell(row, PREVIEW_COL_TRACK, track_calc if track_calc is not None else "0")
-            self._set_preview_readonly_cell(row, PREVIEW_COL_BIN, bin_calc if bin_calc is not None else "0")
+            self._set_preview_readonly_cell(row, PREVIEW_COL_TRACK, track_calc)
+            self._set_preview_readonly_cell(row, PREVIEW_COL_BIN, bin_calc)
 
             self._set_preview_editable_cell(row, PREVIEW_COL_DESCRIPTOR, fila.get("descriptor") or "", ya_subido)
 
@@ -6141,6 +7480,7 @@ class GNSSeismicController(QWidget):
             # las notas junto a `PREVIEW_COL_INCLUDE`).
             self._set_preview_readonly_cell(row, PREVIEW_COL_TIPO, fila["tipo"])
             self._set_preview_readonly_cell(row, PREVIEW_COL_ARCHIVO, fila["archivo"])
+            self._set_preview_readonly_cell(row, PREVIEW_COL_SURVEYOR, self._surveyor_de_fila(fila) or "-")
 
             self._render_preview_match_cells(row, fila)
 
@@ -6165,6 +7505,9 @@ class GNSSeismicController(QWidget):
     def _render_import_preview_summary(self):
         if not hasattr(self, "lbl_preview_resumen"):
             return
+        # La cabecera del acordeón PREPLOT muestra si la comparación está
+        # activa (hay PREPLOT) -- se refresca junto con el resumen.
+        self._actualizar_resumen_acordeones()
         if self._last_import_preview_summary is None:
             self.lbl_preview_resumen.setText("")
             return
@@ -6201,7 +7544,7 @@ class GNSSeismicController(QWidget):
             "descriptor TEXT, lat REAL, lon REAL, este REAL, norte REAL, "
             "altura REAL, hi REAL, comentario TEXT, tipo TEXT, calidad TEXT, "
             "survey_mode_text TEXT, survey_mode_value TEXT, "
-            "incluir INTEGER, subido INTEGER, archivo TEXT, estado TEXT"
+            "incluir INTEGER, subido INTEGER, archivo TEXT, estado TEXT, surveyor TEXT"
             ")"
         )
         dest_crs = self._working_crs()
@@ -6231,11 +7574,12 @@ class GNSSeismicController(QWidget):
                 1 if fila.get("incluir", True) else 0,
                 1 if fila.get("subido") else 0,
                 fila.get("archivo") or "", estado,
+                self._surveyor_de_fila(fila),
             ))
         conn.executemany(
             "INSERT INTO PREVIEW (id, nombre, track, bin, descriptor, lat, lon, este, norte, "
             "altura, hi, comentario, tipo, calidad, survey_mode_text, survey_mode_value, "
-            "incluir, subido, archivo, estado) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "incluir, subido, archivo, estado, surveyor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             filas_sql,
         )
         conn.commit()
@@ -6864,6 +8208,100 @@ class GNSSeismicController(QWidget):
             if row < len(self._import_preview):
                 self._import_preview[row][clave_fila] = valor_fila
 
+    # -- Botón Subir / Subir-Retirar (verde -> rojo) y retiro de la última
+    # subida (pedido explícito del usuario: poder deshacer una subida hecha
+    # por error, incluso ignorando las advertencias de duplicados) --------
+
+    def _actualizar_boton_subir(self):
+        """Verde y "Subir" mientras no haya ninguna subida retirable;
+        rojo y "Subir/Retirar" cuando `self._lotes_subidos` tiene al menos
+        una."""
+        btn = getattr(self, "btn_subir_dc", None)
+        if btn is None:
+            return
+        if self._lotes_subidos:
+            btn.setText(self.t("btn_upload_retire_dc"))
+            btn.setToolTip(self.t("tip_btn_upload_retire_dc"))
+            btn.setStyleSheet(ESTILO_BTN_SUBIR_ROJO)
+        else:
+            btn.setText(self.t("btn_upload_dc"))
+            btn.setToolTip(self.t("tip_btn_upload_dc"))
+            btn.setStyleSheet(ESTILO_BTN_SUBIR_VERDE)
+
+    def _resetear_lotes_subidos(self):
+        self._lotes_subidos = []
+        self._actualizar_boton_subir()
+
+    def _on_click_subir(self):
+        """Sin subidas retirables: sube directamente. Con alguna (botón
+        "Subir/Retirar"): pregunta si se quiere subir lo pendiente, retirar
+        la última subida o cancelar."""
+        if not self._lotes_subidos:
+            self.subir_dc_preview()
+            return
+        lote = self._lotes_subidos[-1]
+        box = QMessageBox(self)
+        box.setWindowTitle(self.t("dlg_upload_retire_title"))
+        box.setText(self.t("dlg_upload_retire_body", n=len(lote["ids"])))
+        btn_subir = box.addButton(self.t("btn_dialog_upload_pending"), MSG_ROLE_ACTION)
+        btn_retirar = box.addButton(self.t("btn_dialog_retire_last", n=len(lote["ids"])), MSG_ROLE_ACTION)
+        box.addButton(MSG_CANCEL)
+        box.setDefaultButton(btn_subir)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_retirar:
+            self._retirar_ultima_subida()
+        elif clicked is btn_subir:
+            self.subir_dc_preview()
+
+    @_escritura()
+    def _retirar_ultima_subida(self):
+        """Borra de POSTPLOT los puntos (por ID exacto) de la subida más
+        reciente, devuelve sus filas de la previsualización a "no subido"
+        con "Incluir" marcado, quita la capa de QGIS que se creó con esa
+        subida y actualiza los conteos y el botón."""
+        if not self._lotes_subidos:
+            return
+        if not self._require_project():
+            return
+        lote = self._lotes_subidos[-1]
+        n = len(lote["ids"])
+        resp = QMessageBox.question(
+            self, self.t("confirm_retire_upload_title"),
+            self.t("confirm_retire_upload_body", n=n),
+        )
+        if resp not in (MSG_YES,):
+            return
+        try:
+            borradas = db_schema.delete_rows_by_id_chunked(self.conn, "POSTPLOT", lote["ids"])
+        except Exception as e:
+            QMessageBox.warning(self, self.t("warn_retire_upload_title"), self.t("warn_retire_upload_error", error=e))
+            return
+        self._lotes_subidos.pop()
+
+        claves = set(lote["keys"])
+        for fila in self._import_preview:
+            if (fila.get("origen"), fila.get("archivo_path"), fila.get("line_no")) in claves:
+                fila["subido"] = False
+                fila["incluir"] = True
+        layer_id = lote.get("layer_id")
+        if layer_id:
+            try:
+                if self.project.mapLayer(layer_id) is not None:
+                    self.project.removeMapLayer(layer_id)
+            except Exception:  # nosec B110 - la capa pudo haberla borrado el usuario a mano
+                pass
+
+        self.actualizar_conteos()
+        self.log_importar.appendPlainText(self.t("log_retire_upload_ok", n=borradas))
+        self._actualizar_boton_subir()
+        if self._import_preview:
+            self._llenar_tabla_preview()
+        QMessageBox.information(
+            self, self.t("info_retire_upload_title"), self.t("info_retire_upload_body", n=borradas),
+        )
+
+    @_escritura()
     def subir_dc_preview(self):
         """Sube a POSTPLOT sólo los puntos de `self._import_preview` con
         la casilla "Incluir" marcada, usando el nombre/altura de
@@ -6882,6 +8320,24 @@ class GNSSeismicController(QWidget):
             QMessageBox.information(self, self.t("info_nothing_to_upload_title"), self.t("info_nothing_to_upload_body"))
             return
 
+        # Advertencia (pedido explícito del usuario): si alguno de los
+        # puntos a subir ya existe en POSTPLOT (mismo Station_Text, sin
+        # distinguir mayúsculas), se pide confirmación antes de insertar.
+        # Es una advertencia, no un candado -- una reocupación intencional
+        # es legítima -- y lo que se suba por error se puede retirar con
+        # "Subir/Retirar" (`_retirar_ultima_subida`).
+        existentes = self._nombres_postplot_existentes(f["nombre"] for f in incluidas)
+        duplicados = [f for f in incluidas if (f.get("nombre") or "").strip().upper() in existentes]
+        if duplicados:
+            ejemplos = ", ".join(sorted({str(f["nombre"]).strip() for f in duplicados})[:8])
+            resp = QMessageBox.question(
+                self, self.t("warn_upload_duplicates_title"),
+                self.t("warn_upload_duplicates_body", n=len(duplicados), ejemplos=ejemplos),
+                MSG_YES | MSG_NO, MSG_NO,
+            )
+            if resp != MSG_YES:
+                return
+
         por_archivo = {}
         for f in incluidas:
             por_archivo.setdefault((f["origen"], f["archivo_path"]), []).append(f)
@@ -6891,17 +8347,24 @@ class GNSSeismicController(QWidget):
         chcnav_by_path = {cf.path: cf for cf in self.chcnav_files}
         stonex_by_path = {sf.path: sf for sf in self.stonex_files}
         surpad_by_path = {sf.path: sf for sf in self.surpad_files}
+        sourcelink_by_path = {sf.path: sf for sf in self.sourcelink_files}
+        inova_by_path = {sf.path: sf for sf in self.inova_files}
         _archivo_by_origen = {
             "DC": dc_by_path, "HITARGET": hitarget_by_path,
             "CHCNAV": chcnav_by_path, "STONEX": stonex_by_path,
-            "SURPAD": surpad_by_path,
+            "SURPAD": surpad_by_path, "SOURCELINK": sourcelink_by_path, "INOVA": inova_by_path,
         }
 
         total_insertadas = 0
         puntos_para_capa = []  # (nombre, lat, lon, altura, tipo)
+        lote = {"ids": [], "keys": [], "layer_id": None}
 
         for (origen, archivo_path), filas in por_archivo.items():
             archivo_obj = _archivo_by_origen.get(origen, {}).get(archivo_path)
+            # Processor (global) y Surveyor (propio del archivo) de la
+            # pestaña -- None si se dejan vacíos, para no guardar "".
+            processor_txt = self.txt_import_processor.text().strip() or None
+            surveyor_txt = self._surveyor_por_archivo.get((origen, archivo_path), "").strip() or None
             rows = []
             for f in filas:
                 # Offset North/East/Range/Bearing/Height e Inline/Crossline/
@@ -6933,6 +8396,7 @@ class GNSSeismicController(QWidget):
                         inline_azimuth = az
                 rows.append({
                     "Station_Text": f["nombre"],
+                    "Station_Value": punto_nombre.station_value_numerico(f["nombre"]),
                     "Track": int(f["track"]) if f["track"] else None,
                     "Bin": int(f["bin"]) if f["bin"] else None,
                     # Corregido en v2.60.0: hasta esta versión acá se
@@ -7051,11 +8515,21 @@ class GNSSeismicController(QWidget):
                     "Occupation_Time": f.get("occupation_seconds"),
                     "GPS_Baseline": f.get("gps_baseline_m"),
                     "GPS_Base_Station": f.get("gps_base_station"),
+                    "Processor": processor_txt,
+                    # SourceLink trae el vibrador (Unit ID) por punto y tiene
+                    # prioridad; el resto usa el Surveyor escrito junto al
+                    # archivo.
+                    "Surveyor": (f.get("surveyor") or surveyor_txt),
                 })
                 puntos_para_capa.append((f["nombre"], f["lat"], f["lon"], f["altura_wgs84"], f["tipo"]))
 
             try:
-                n = db_schema.insert_rows(self.conn, "POSTPLOT", db_schema.POSTPLOT_COLUMNS, rows)
+                ids_insertados = db_schema.insert_rows_with_ids(
+                    self.conn, "POSTPLOT", db_schema.POSTPLOT_COLUMNS, rows,
+                )
+                n = len(ids_insertados)
+                lote["ids"].extend(ids_insertados)
+                lote["keys"].extend((f["origen"], f["archivo_path"], f["line_no"]) for f in filas)
                 total_insertadas += n
                 nombre_archivo = os.path.basename(archivo_path)
                 job = archivo_obj.job_name if origen == "DC" and archivo_obj is not None else None
@@ -7076,9 +8550,19 @@ class GNSSeismicController(QWidget):
         self.actualizar_conteos()
 
         if self.chk_crear_capa_import.isChecked() and puntos_para_capa:
-            self._crear_capa_puntos_dc(puntos_para_capa)
+            capa = self._crear_capa_puntos_dc(puntos_para_capa)
+            if capa is not None:
+                lote["layer_id"] = capa.id()
 
-        QMessageBox.information(self, self.t("msg_import_done_title"), self.t("msg_import_done_body", n=total_insertadas))
+        if lote["ids"]:
+            self._lotes_subidos.append(lote)
+            self._actualizar_boton_subir()
+
+        QMessageBox.information(
+            self, self.t("msg_import_done_title"),
+            self.t("msg_import_done_body", n=total_insertadas)
+            + ("\n\n" + self.t("msg_import_done_retire_hint") if lote["ids"] else ""),
+        )
 
         self._llenar_tabla_preview()
 
@@ -7111,6 +8595,7 @@ class GNSSeismicController(QWidget):
         # punto no aparece en el plano" al importar.
         QApplication.processEvents()
         self._zoom_canvas_a_capa(layer)
+        return layer
 
     def _aplicar_estilo_por_tipo(self, layer, tipos_presentes):
         """Simboliza por categorías la capa creada al subir "Importar
@@ -7792,6 +9277,7 @@ class GNSSeismicController(QWidget):
         except Exception as e:
             QMessageBox.critical(self, self.t("err_title"), self.t("err_export_generic", error=e))
 
+    @_escritura()
     def subir_a_bd(self):
         if not self._require_project():
             return
@@ -7843,9 +9329,19 @@ class GNSSeismicController(QWidget):
             QMessageBox.critical(self, self.t("err_title"), self.t("err_upload_db", error=e, trace=traceback.format_exc()))
 
     # -- Sección: Base de Datos --------------------------------------------
+    # -- Sección: Base de Datos (rediseño v2.66.0) ---------------------------
+    # Arriba, dos tarjetas lado a lado (50/50): "Consola SQL" (selector de
+    # consulta, cuadro de 3 líneas y barra de acciones) y "Edición rápida:
+    # Buscar y reemplazar" (cuadrícula compacta). En el medio, la tabla de
+    # resultados con un encabezado que cuenta los registros, ocupando todo el
+    # alto sobrante. Abajo, dos tarjetas: "Mapeo de columnas" (cuadrícula de
+    # 3 columnas + interruptor) y "Formato de salida" (formato + opciones SPS
+    # sólo si se elige SPS + botón "Exportar...").
     def _build_tab_bd(self):
         w = QWidget()
         v = QVBoxLayout(w)
+        v.setSpacing(6)
+        v.addWidget(self._crear_banner_solo_lectura())
         self._agregar_boton_ayuda(
             v, [
                 "bd_intro", "lbl_query_map_note", "lbl_query_edit_note",
@@ -7854,209 +9350,205 @@ class GNSSeismicController(QWidget):
             ], "tab5_title",
         )
 
-        # Pedido explícito del usuario (v2.54.0): repartir el espacio
-        # horizontal entre "donde se muestra el query" (el editor de SQL
-        # de siempre, con sus controles) y "Buscar / Buscar y reemplazar"
-        # -- mitad y mitad, en vez de una sección entera arriba de la
-        # otra -- para aprovechar mejor el espacio vertical de la
-        # ventana. Ambos bloques quedan en su propio QGroupBox, uno al
-        # lado del otro con el mismo "stretch" (1, 1 -> 50/50); la tabla
-        # de resultados y el resto de abajo (mapeo de columnas, opciones
-        # de exportación) siguen ocupando el ancho completo, sin cambios.
-        grp_sql = self._reg(QGroupBox(), "grp_sql_query", kind="title")
-        col_sql = QVBoxLayout(grp_sql)
+        # ---- Tarjeta izquierda: Consola SQL ----
+        grp_sql, col_sql = self._tarjeta_card("bd_card_sql")
 
         fila_preset = QHBoxLayout()
         fila_preset.addWidget(self._reg(QLabel(), "lbl_query_preset"))
         self.cb_query_preset = QComboBox()
+        self.cb_query_preset.setSizeAdjustPolicy(
+            _valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy")
+        )
+        self.cb_query_preset.setMinimumContentsLength(14)
         self._fill_query_preset_combo()
         self.cb_query_preset.currentIndexChanged.connect(self._aplicar_preset_consulta)
-        fila_preset.addWidget(self.cb_query_preset)
-        self.btn_rename_query = self._reg(QPushButton(), "btn_rename_query")
-        self._reg(self.btn_rename_query, "tip_btn_rename_query", kind="tooltip")
-        self.btn_rename_query.clicked.connect(self.renombrar_consulta_actual)
-        fila_preset.addWidget(self.btn_rename_query)
+        fila_preset.addWidget(self.cb_query_preset, 1)
+
+        # Renombrar / Importar / Exportar consultas guardadas (antes tres
+        # botones sueltos): ahora un único botón "⋯" con un menú. Las
+        # consultas guardadas con "Guardar" viven sólo en QSettings de ESTA
+        # máquina/perfil de QGIS; "Importar consultas..." las trae de un
+        # .qrylt de GPSeismic o de un .json exportado antes con "Exportar
+        # consultas..." -- ver `_parse_qrylt_text`/
+        # `_parse_custom_queries_json`/`_fusionar_consultas_importadas`
+        # (funciones puras, con pruebas unitarias).
+        self.btn_mas_consultas = QPushButton("⋯")
+        self.btn_mas_consultas.setStyleSheet(ESTILO_BTN_ICONO)
+        self.btn_mas_consultas.setMinimumWidth(40)
+        self._reg(self.btn_mas_consultas, "bd_tip_mas", kind="tooltip")
+        menu_consultas = QMenu(self.btn_mas_consultas)
+        for key, slot in (
+            ("btn_rename_query", self.renombrar_consulta_actual),
+            ("btn_import_queries", self.importar_consultas_guardadas),
+            ("btn_export_queries", self.exportar_consultas_guardadas),
+        ):
+            accion = self._reg(QAction(menu_consultas), key)
+            self._reg(accion, "tip_" + key, kind="tooltip")
+            accion.triggered.connect(slot)
+            menu_consultas.addAction(accion)
+        self.btn_mas_consultas.setMenu(menu_consultas)
+        fila_preset.addWidget(self.btn_mas_consultas)
         col_sql.addLayout(fila_preset)
 
-        # Importar/exportar consultas guardadas (pedido explícito del
-        # usuario, junto con un archivo .qrylt real de GPSeismic): las
-        # consultas guardadas con "Guardar consulta..." viven sólo en
-        # QSettings de ESTA máquina/perfil de QGIS -- "Importar
-        # consultas..." las trae de un archivo .qrylt de GPSeismic (para no
-        # tener que rearmar a mano las que ya existen ahí) o de un .json
-        # exportado antes por este mismo botón "Exportar consultas..."
-        # (para llevarlas a otra máquina/perfil) -- ver
-        # `_parse_qrylt_text`/`_parse_custom_queries_json`/
-        # `_fusionar_consultas_importadas` (funciones puras, sin QGIS/PyQt,
-        # ver sus pruebas unitarias).
-        fila_import_export = QHBoxLayout()
-        self.btn_import_queries = self._reg(QPushButton(), "btn_import_queries")
-        self._reg(self.btn_import_queries, "tip_btn_import_queries", kind="tooltip")
-        self.btn_import_queries.clicked.connect(self.importar_consultas_guardadas)
-        fila_import_export.addWidget(self.btn_import_queries)
-        self.btn_export_queries = self._reg(QPushButton(), "btn_export_queries")
-        self._reg(self.btn_export_queries, "tip_btn_export_queries", kind="tooltip")
-        self.btn_export_queries.clicked.connect(self.exportar_consultas_guardadas)
-        fila_import_export.addWidget(self.btn_export_queries)
-        fila_import_export.addStretch(1)
-        col_sql.addLayout(fila_import_export)
-
+        # Cuadro de texto de tamaño fijo: 3 líneas.
         self.txt_sql = QPlainTextEdit()
         self.txt_sql.setPlainText(self._get_effective_preset_sql("postplot_all"))
-        self.txt_sql.setMaximumHeight(90)
+        alto_3_lineas = (
+            self.txt_sql.fontMetrics().lineSpacing() * 3
+            + int(self.txt_sql.document().documentMargin() * 2)
+            + 2 * self.txt_sql.frameWidth() + 2
+        )
+        self.txt_sql.setFixedHeight(alto_3_lineas)
         col_sql.addWidget(self.txt_sql)
 
-        # Nombres acortados a una sola palabra (v2.55.0, pedido explícito del
-        # usuario): esta fila quedó muy angosta tras el reparto 50/50 de la
-        # v2.54.0 y el texto largo de cada botón se truncaba. Cada botón
-        # tiene además un tooltip ("tip_btn_...") con la explicación
-        # completa, y el detalle de los nueve botones del panel (estos
-        # cuatro más los cinco de "Buscar / Buscar y reemplazar") se agregó
-        # al botón de ayuda ("?") de arriba -- ver "note_bd_botones".
+        # Barra de acciones icónica, justo debajo del cuadro. Cada botón
+        # tiene un tooltip ("tip_btn_...") con la explicación completa (ver
+        # también "note_bd_botones" en el "?" de arriba).
         fila_ejecutar = QHBoxLayout()
-        btn_ejecutar = self._reg(QPushButton(), "btn_run_query")
-        self._reg(btn_ejecutar, "tip_btn_run_query", kind="tooltip")
-        btn_ejecutar.clicked.connect(self.ejecutar_consulta)
-        fila_ejecutar.addWidget(btn_ejecutar)
-        self.btn_save_query = self._reg(QPushButton(), "btn_save_query")
-        self._reg(self.btn_save_query, "tip_btn_save_query", kind="tooltip")
-        self.btn_save_query.clicked.connect(self.guardar_consulta_actual)
-        fila_ejecutar.addWidget(self.btn_save_query)
-        self.btn_delete_query = self._reg(QPushButton(), "btn_delete_query_results")
-        self._reg(self.btn_delete_query, "tip_btn_delete_query_results", kind="tooltip")
+        self.btn_run_query = self._boton_barra("bd_tb_run", "tip_btn_run_query", self.ejecutar_consulta)
+        self.btn_save_query = self._boton_barra("bd_tb_save", "tip_btn_save_query", self.guardar_consulta_actual)
+        self.btn_delete_query = self._boton_barra(
+            "bd_tb_delete", "tip_btn_delete_query_results", self.borrar_resultados_consulta
+        )
         self.btn_delete_query.setEnabled(False)
-        self.btn_delete_query.setStyleSheet("QPushButton:enabled { color: #b3261e; font-weight: 600; }")
-        self.btn_delete_query.clicked.connect(self.borrar_resultados_consulta)
-        fila_ejecutar.addWidget(self.btn_delete_query)
-        self.btn_save_query_changes = self._reg(QPushButton(), "btn_save_query_changes")
-        self._reg(self.btn_save_query_changes, "tip_btn_save_query_changes", kind="tooltip")
+        self.btn_delete_query.setStyleSheet(ESTILO_BTN_BARRA + "QToolButton:enabled { color: #b3261e; font-weight: 600; }")
+        self.btn_save_query_changes = self._boton_barra(
+            "bd_tb_apply", "tip_btn_save_query_changes", self.guardar_cambios_consulta
+        )
         self.btn_save_query_changes.setEnabled(False)
-        self.btn_save_query_changes.clicked.connect(self.guardar_cambios_consulta)
-        fila_ejecutar.addWidget(self.btn_save_query_changes)
-        self.lbl_query_resumen = QLabel(self.t("lbl_query_empty"))
-        fila_ejecutar.addWidget(self.lbl_query_resumen)
-        fila_ejecutar.addStretch()
+        for b in (self.btn_run_query, self.btn_save_query, self.btn_delete_query, self.btn_save_query_changes):
+            fila_ejecutar.addWidget(b)
+        fila_ejecutar.addStretch(1)
         col_sql.addLayout(fila_ejecutar)
+        col_sql.addStretch(1)
 
-        # Pedido explícito del usuario: una sección de "Buscar / Buscar y
-        # reemplazar" aparte del editor de SQL libre de la izquierda,
-        # para poder buscar (o reemplazar en bloque) por CUALQUIER
-        # columna de POSTPLOT/PREPLOT/COMPARACION sin tener que escribir
-        # SQL a mano. "Buscar" arma un SELECT equivalente y lo corre con
-        # el mismo mecanismo que ya tiene esta pestaña
-        # (`ejecutar_consulta`), así que el resultado queda en la misma
-        # tabla de abajo, con edición en línea, borrado, mapeo de
-        # columnas y exportación ya funcionando, sin duplicar nada de esa
-        # lógica -- ver `buscar_por_columna`. "Reemplazar todos..." SÍ es
-        # una acción nueva (ver `reemplazar_por_columna`/
-        # `db_schema.replace_in_column`): escribe un valor nuevo en
-        # TODAS las filas que matcheen, pidiendo confirmación explícita y
-        # mostrando antes cuántas filas se van a modificar -- mismo
-        # criterio que el resto de las acciones de escritura de este
-        # panel (borrar resultados, guardar ediciones).
-        grp_buscar = self._reg(QGroupBox(), "grp_search_replace", kind="title")
-        form_buscar = QFormLayout(grp_buscar)
+        # ---- Tarjeta derecha: Edición rápida (Buscar y reemplazar) ----
+        # Pedido explícito del usuario: buscar (o reemplazar en bloque) por
+        # CUALQUIER columna de POSTPLOT/PREPLOT/COMPARACION sin escribir SQL.
+        # "Buscar" arma un SELECT equivalente y lo corre con el mismo
+        # mecanismo de la pestaña (`ejecutar_consulta`), así el resultado
+        # queda en la misma tabla, con edición en línea, borrado, mapeo y
+        # exportación ya funcionando -- ver `buscar_por_columna`.
+        # "Reemplazar" SÍ escribe: pide confirmación y muestra antes
+        # cuántas filas se van a modificar (`reemplazar_por_columna`/
+        # `db_schema.replace_in_column`).
+        grp_buscar, v_buscar = self._tarjeta_card("bd_card_buscar")
 
         self.cb_sr_tabla = QComboBox()
         for tabla in ("POSTPLOT", "PREPLOT", "COMPARACION"):
             self.cb_sr_tabla.addItem(tabla, tabla)
         self.cb_sr_tabla.currentIndexChanged.connect(self._poblar_columnas_buscar_reemplazar)
-        self._form_row(form_buscar, "lbl_sr_table", self.cb_sr_tabla)
-
         self.cb_sr_columna = QComboBox()
-        self._form_row(form_buscar, "lbl_sr_column", self.cb_sr_columna)
+        self.cb_sr_columna.setSizeAdjustPolicy(
+            _valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy")
+        )
+        self.cb_sr_columna.setMinimumContentsLength(10)
+        self.chk_sr_exacto = self._reg(QCheckBox(), "chk_sr_exact")
+
+        fila_1 = QHBoxLayout()
+        fila_1.addWidget(self._reg(QLabel(), "lbl_sr_table"))
+        fila_1.addWidget(self.cb_sr_tabla, 1)
+        fila_1.addSpacing(6)
+        fila_1.addWidget(self._reg(QLabel(), "lbl_sr_column"))
+        fila_1.addWidget(self.cb_sr_columna, 1)
+        fila_1.addSpacing(6)
+        fila_1.addWidget(self.chk_sr_exacto)
+        v_buscar.addLayout(fila_1)
 
         self.txt_sr_buscar = QLineEdit()
         self._reg(self.txt_sr_buscar, "ph_sr_search", kind="placeholder")
-        self._form_row(form_buscar, "lbl_sr_search", self.txt_sr_buscar)
-
-        self.chk_sr_exacto = self._reg(QCheckBox(), "chk_sr_exact")
-        form_buscar.addRow(self.chk_sr_exacto)
-
         self.txt_sr_reemplazar = QLineEdit()
         self._reg(self.txt_sr_reemplazar, "ph_sr_replace", kind="placeholder")
-        self._form_row(form_buscar, "lbl_sr_replace", self.txt_sr_reemplazar)
+        fila_2 = QHBoxLayout()
+        fila_2.addWidget(self._reg(QLabel(), "lbl_sr_search"))
+        fila_2.addWidget(self.txt_sr_buscar, 1)
+        fila_2.addSpacing(6)
+        fila_2.addWidget(self._reg(QLabel(), "lbl_sr_replace"))
+        fila_2.addWidget(self.txt_sr_reemplazar, 1)
+        v_buscar.addLayout(fila_2)
 
         fila_sr_botones = QHBoxLayout()
-        self.btn_sr_buscar = self._reg(QPushButton(), "btn_sr_search")
-        self._reg(self.btn_sr_buscar, "tip_btn_sr_search", kind="tooltip")
-        self.btn_sr_buscar.clicked.connect(self.buscar_por_columna)
+        fila_sr_botones.addStretch(1)
+        self.btn_sr_buscar = self._boton_barra("bd_tb_search", "tip_btn_sr_search", self.buscar_por_columna)
+        self.btn_sr_reemplazar = self._boton_barra("bd_tb_replace", "tip_btn_sr_replace_all", self.reemplazar_por_columna)
+        self.btn_sr_reemplazar.setStyleSheet(ESTILO_BTN_BARRA + "QToolButton { color: #b3261e; font-weight: 600; }")
         fila_sr_botones.addWidget(self.btn_sr_buscar)
-        self.btn_sr_reemplazar = self._reg(QPushButton(), "btn_sr_replace_all")
-        self._reg(self.btn_sr_reemplazar, "tip_btn_sr_replace_all", kind="tooltip")
-        self.btn_sr_reemplazar.setStyleSheet("QPushButton { color: #b3261e; font-weight: 600; }")
-        self.btn_sr_reemplazar.clicked.connect(self.reemplazar_por_columna)
         fila_sr_botones.addWidget(self.btn_sr_reemplazar)
-        fila_sr_botones.addStretch()
-        form_buscar.addRow(fila_sr_botones)
+        v_buscar.addLayout(fila_sr_botones)
+        v_buscar.addStretch(1)
 
-        # Mitad y mitad de verdad: con un QHBoxLayout normal, el "stretch"
-        # de `addWidget(w, stretch)` sólo reparte el espacio SOBRANTE
-        # después del ancho "preferido" (sizeHint) de cada widget -- como
-        # "Consulta SQL" tiene de por sí más contenido horizontal (varios
-        # botones en fila) que el formulario de "Buscar y reemplazar",
-        # terminaba con bastante más ancho aunque ambos tuvieran el mismo
-        # stretch (1, 1). `QSizePolicy.Ignored` le dice al layout que
-        # IGNORE el sizeHint de cada uno -- con eso, un QGridLayout con
-        # las dos columnas al mismo `setColumnStretch` sí reparte el
-        # ancho total 50/50 de verdad, sin importar cuánto contenido
-        # tenga cada lado.
-        grp_sql.setSizePolicy(SIZE_POLICY_IGNORED, grp_sql.sizePolicy().verticalPolicy())
-        grp_buscar.setSizePolicy(SIZE_POLICY_IGNORED, grp_buscar.sizePolicy().verticalPolicy())
-        grid_mitades = QGridLayout()
-        grid_mitades.setColumnStretch(0, 1)
-        grid_mitades.setColumnStretch(1, 1)
-        grid_mitades.addWidget(grp_sql, 0, 0)
-        grid_mitades.addWidget(grp_buscar, 0, 1)
-        v.addLayout(grid_mitades)
+        # Mitad y mitad de verdad: `QSizePolicy.Ignored` le dice al layout
+        # que IGNORE el sizeHint de cada tarjeta, y un QGridLayout con las
+        # dos columnas al mismo `setColumnStretch` reparte el ancho 50/50
+        # sin importar cuánto contenido tenga cada lado.
+        for g in (grp_sql, grp_buscar):
+            g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
+        grid_arriba = QGridLayout()
+        grid_arriba.setColumnStretch(0, 1)
+        grid_arriba.setColumnStretch(1, 1)
+        grid_arriba.setHorizontalSpacing(10)
+        grid_arriba.addWidget(grp_sql, 0, 0)
+        grid_arriba.addWidget(grp_buscar, 0, 1)
+        v.addLayout(grid_arriba)
         self._poblar_columnas_buscar_reemplazar()
 
-        # El texto explicativo que iba aquí ("lbl_query_map_note") se
-        # movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
-
-        # Pedido del usuario (v2.21.0): habilitar la edición de la base de
-        # datos directo desde esta tabla, con un botón aparte para guardar
-        # los cambios (arriba, "btn_save_query_changes") y aviso de
-        # confirmación antes de escribirlos de verdad -- ver
-        # `_set_query_table_editable`/`_on_query_cell_changed`/
-        # `guardar_cambios_consulta`. Sólo se habilita cuando la consulta
-        # actual es tan "borrable" como "editable" (mismo chequeo de
-        # `ejecutar_consulta`, más columnas validadas contra el esquema
-        # real de la tabla).
-        # El texto explicativo que iba aquí ("lbl_query_edit_note") se
-        # movió al botón de ayuda ("?") de arriba de la pestaña -- ver
-        # `_agregar_boton_ayuda`.
+        # ---- Centro: encabezado con el conteo + tabla de resultados ----
+        # Edición de la base desde esta tabla (v2.21.0): doble clic en una
+        # celda y "Aplicar" para guardar -- ver `_set_query_table_editable`/
+        # `_on_query_cell_changed`/`guardar_cambios_consulta`; sólo se
+        # habilita cuando la consulta es tan "borrable" como "editable".
+        self.lbl_query_resumen = QLabel()
+        self.lbl_query_resumen.setTextFormat(_valor_enum(Qt, "RichText", "TextFormat"))
+        v.addWidget(self.lbl_query_resumen)
+        self._set_query_resumen(None)
 
         self.tbl_query = QTableWidget(0, 0)
+        self.tbl_query.setMinimumHeight(220)
+        self.tbl_query.verticalHeader().setDefaultSectionSize(24)
         self._set_query_table_editable(False)
         self.tbl_query.itemChanged.connect(self._on_query_cell_changed)
-        v.addWidget(self.tbl_query)
+        v.addWidget(self.tbl_query, 1)
 
-        grp_map = self._reg(QGroupBox(), "grp_col_mapping", kind="title")
-        form_map = QFormLayout(grp_map)
-        self.cb_map_nombre = QComboBox()
-        self.cb_map_linea = QComboBox()
-        self.cb_map_punto_sps = QComboBox()
-        self.cb_map_x = QComboBox()
-        self.cb_map_y = QComboBox()
-        self.cb_map_z = QComboBox()
-        self.cb_map_codigo = QComboBox()
-        self._form_row(form_map, "lbl_map_name", self.cb_map_nombre)
-        self._form_row(form_map, "lbl_map_line", self.cb_map_linea)
-        self._form_row(form_map, "lbl_map_sps_point", self.cb_map_punto_sps)
-        self._form_row(form_map, "lbl_map_x", self.cb_map_x)
-        self._form_row(form_map, "lbl_map_y", self.cb_map_y)
-        self._form_row(form_map, "lbl_map_z", self.cb_map_z)
-        self._form_row(form_map, "lbl_map_code", self.cb_map_codigo)
-        self.chk_map_geografica = self._reg(QCheckBox(), "chk_map_geographic")
-        form_map.addRow(self.chk_map_geografica)
+        # ---- Abajo izquierda: Mapeo de columnas ----
+        grp_map, v_map = self._tarjeta_card("bd_card_mapeo")
+        self.cb_map_nombre = self._combo_campo()
+        self.cb_map_linea = self._combo_campo()
+        self.cb_map_punto_sps = self._combo_campo()
+        self.cb_map_x = self._combo_campo()
+        self.cb_map_y = self._combo_campo()
+        self.cb_map_z = self._combo_campo()
+        self.cb_map_codigo = self._combo_campo()
+        cont_map, g = self._bloque_filas()
+        self._celda_campo(g, 0, 0, "bd_map_nombre", self.cb_map_nombre)
+        self._celda_campo(g, 0, 1, "bd_map_linea", self.cb_map_linea)
+        self._celda_campo(g, 0, 2, "bd_map_punto", self.cb_map_punto_sps)
+        self._celda_campo(g, 1, 0, "bd_map_x", self.cb_map_x)
+        self._celda_campo(g, 1, 1, "bd_map_y", self.cb_map_y)
+        self._celda_campo(g, 1, 2, "bd_map_z", self.cb_map_z)
+        self._celda_campo(g, 2, 0, "bd_map_codigo", self.cb_map_codigo)
+        v_map.addWidget(cont_map)
+        v_map.addStretch(1)
+        self.chk_map_geografica = self._reg(ToggleSwitch(), "chk_map_geographic")
+        v_map.addWidget(self.chk_map_geografica)
 
-        grp_sps = self._reg(QGroupBox(), "grp_export_options", kind="title")
-        form_sps = QFormLayout(grp_sps)
-        lbl_sps_hint = self._reg(QLabel(), "lbl_sps_options_hint")
-        lbl_sps_hint.setWordWrap(True)
-        form_sps.addRow(lbl_sps_hint)
+        # ---- Abajo derecha: Formato de salida ----
+        # Pedido del usuario (v2.21.0): una única lista desplegable de
+        # formato + un solo botón "Exportar...", con Excel (.csv) como
+        # cuarto formato. Las opciones de SPS (tipo de punto, índice, código
+        # fijo) sólo se muestran si el formato elegido es SPS.
+        grp_sal, v_sal = self._tarjeta_card("bd_card_salida")
+        fila_fmt = QHBoxLayout()
+        fila_fmt.addWidget(self._reg(QLabel(), "lbl_export_format"))
+        self.cb_export_format = QComboBox()
+        self._fill_export_format_combo()
+        fila_fmt.addWidget(self.cb_export_format, 1)
+        fila_fmt.addWidget(self._crear_icono_info("bd_export_info"))
+        v_sal.addLayout(fila_fmt)
+
+        self.cont_opciones_sps = QWidget()
+        v_sps = QVBoxLayout(self.cont_opciones_sps)
+        v_sps.setContentsMargins(0, 0, 0, 0)
+        v_sps.setSpacing(6)
         self.rb_sps_fuente = self._reg(QRadioButton(), "rb_sps_source")
         self.rb_sps_receptor = self._reg(QRadioButton(), "rb_sps_receiver")
         self.rb_sps_fuente.setChecked(True)
@@ -8064,45 +9556,68 @@ class GNSSeismicController(QWidget):
         grupo_sps.addButton(self.rb_sps_fuente)
         grupo_sps.addButton(self.rb_sps_receptor)
         h_sps_tipo = QHBoxLayout()
+        h_sps_tipo.addWidget(self._reg(QLabel(), "lbl_sps_point_type"))
         h_sps_tipo.addWidget(self.rb_sps_fuente)
         h_sps_tipo.addWidget(self.rb_sps_receptor)
-        form_sps.addRow(self._reg(QLabel(), "lbl_sps_point_type"), h_sps_tipo)
-
-        self.sp_sps_indice = QSpinBox()
-        self.sp_sps_indice.setRange(0, 9)
-        self.sp_sps_indice.setValue(1)
-        self._form_row(form_sps, "lbl_sps_index", self.sp_sps_indice)
-
+        h_sps_tipo.addStretch(1)
+        v_sps.addLayout(h_sps_tipo)
+        self.sp_sps_indice = self._spin_entero(0, 9, 1)
         self.txt_sps_codigo_fijo = QLineEdit()
         self.txt_sps_codigo_fijo.setMaxLength(2)
         self._reg(self.txt_sps_codigo_fijo, "tip_sps_fixed_code", kind="tooltip")
-        self._form_row(form_sps, "lbl_sps_fixed_code", self.txt_sps_codigo_fijo)
+        cont_sps, g = self._bloque_filas(2)
+        self._celda_campo(g, 0, 0, "lbl_sps_index", self.sp_sps_indice)
+        self._celda_campo(g, 0, 1, "lbl_sps_fixed_code", self.txt_sps_codigo_fijo)
+        v_sps.addWidget(cont_sps)
+        v_sal.addWidget(self.cont_opciones_sps)
+        v_sal.addStretch(1)
 
-        # Pedido del usuario (v2.21.0): los tres botones de exportar
-        # (Shapefile/GeoPackage/SPS) se reemplazan por una única lista
-        # desplegable de formato + un solo botón "Exportar...", con Excel
-        # (.csv) agregado como cuarto formato, puesto en la parte inferior
-        # de este mismo grupo -- antes "Opciones para exportar a SPS"
-        # (renombrado a algo genérico porque ya no es sólo para SPS), en
-        # vez de una fila aparte de 3 botones debajo de "Mapeo de
-        # columnas"/"Opciones para exportar". Ahorra el espacio vertical
-        # que ocupaba esa fila.
-        self.cb_export_format = QComboBox()
-        self._fill_export_format_combo()
-        self._form_row(form_sps, "lbl_export_format", self.cb_export_format)
         self.btn_export = self._reg(QPushButton(), "btn_export_run")
+        self.btn_export.setStyleSheet(ESTILO_BTN_PRIMARIO)
+        self.btn_export.setMinimumHeight(36)
+        self.btn_export.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
         self.btn_export.clicked.connect(lambda: self.exportar_query(self.cb_export_format.currentData()))
-        form_sps.addRow(self.btn_export)
+        v_sal.addWidget(self.btn_export)
+        self.cb_export_format.currentIndexChanged.connect(self._actualizar_visibilidad_opciones_sps)
+        self._actualizar_visibilidad_opciones_sps()
 
-        # Pedido del usuario (v2.19.0): "Opciones para exportar" (SPS) al
-        # lado de "Mapeo de columnas", no debajo -- antes iban uno debajo
-        # del otro en la misma columna vertical.
-        fila_map_sps = QHBoxLayout()
-        fila_map_sps.addWidget(grp_map)
-        fila_map_sps.addWidget(grp_sps)
-        v.addLayout(fila_map_sps)
+        for g in (grp_map, grp_sal):
+            g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
+        grid_abajo = QGridLayout()
+        grid_abajo.setColumnStretch(0, 1)
+        grid_abajo.setColumnStretch(1, 1)
+        grid_abajo.setHorizontalSpacing(10)
+        grid_abajo.addWidget(grp_map, 0, 0)
+        grid_abajo.addWidget(grp_sal, 0, 1)
+        v.addLayout(grid_abajo)
 
+        w.setStyleSheet(ESTILO_TARJETAS)
         return w
+
+    def _actualizar_visibilidad_opciones_sps(self, *_args):
+        """Las opciones de SPS (fuente/receptor, índice, código fijo) sólo
+        se ven si el formato de exportación elegido es SPS."""
+        if hasattr(self, "cont_opciones_sps"):
+            self.cont_opciones_sps.setVisible(self.cb_export_format.currentData() == "sps")
+
+    def _set_query_resumen(self, n, cols=0):
+        """Encabezado de la tabla de resultados: "● N registros cargados"
+        (verde con datos, ámbar con 0 filas, gris sin consulta). Guarda el
+        estado para volver a dibujarlo al cambiar de idioma."""
+        self._query_resumen_estado = None if n is None else (n, cols)
+        self._render_query_resumen()
+
+    def _render_query_resumen(self):
+        if not hasattr(self, "lbl_query_resumen"):
+            return
+        estado = getattr(self, "_query_resumen_estado", None)
+        if estado is None:
+            punto, texto = "#9e9e9e", self.t("lbl_query_empty")
+        else:
+            n, cols = estado
+            punto = "#2e9d4a" if n > 0 else "#f9a825"
+            texto = self.t("bd_resumen_uno" if n == 1 else "bd_resumen_n", n=n, cols=cols)
+        self.lbl_query_resumen.setText(f"<span style='color:{punto}'>&#9679;</span>&nbsp;{texto}")
 
     # -- Persistencia de "Guardar consulta..." (ver `guardar_consulta_actual`
     # más abajo): dos mecanismos separados en QSettings --
@@ -8494,7 +10009,7 @@ class GNSSeismicController(QWidget):
         rows = self.query_rows
         self._query_pending_edits = {}
         self.btn_save_query_changes.setEnabled(False)
-        self.lbl_query_resumen.setText(self.t("lbl_query_summary", n=len(rows), cols=len(cols)))
+        self._set_query_resumen(len(rows), len(cols))
         self.tbl_query.blockSignals(True)
         self.tbl_query.setColumnCount(len(cols))
         self.tbl_query.setHorizontalHeaderLabels(cols)
@@ -8621,6 +10136,7 @@ class GNSSeismicController(QWidget):
         item.setText(texto_original)
         self.tbl_query.blockSignals(False)
 
+    @_escritura()
     def guardar_cambios_consulta(self):
         """Botón "Guardar cambios en la base de datos...": escribe todos
         los cambios pendientes de `tbl_query` (ver `_on_query_cell_changed`)
@@ -8677,6 +10193,7 @@ class GNSSeismicController(QWidget):
                 self, self.t("ok_title"), self.t("msg_save_edits_ok_body", n=guardadas, tabla=tabla),
             )
 
+    @_escritura()
     def borrar_resultados_consulta(self):
         """Botón "Borrar resultados de la consulta": borra de la base de
         datos TODAS las filas que matchean la consulta SQL actual (no
@@ -8722,7 +10239,7 @@ class GNSSeismicController(QWidget):
         self.btn_delete_query.setEnabled(False)
         self.tbl_query.setColumnCount(0)
         self.tbl_query.setRowCount(0)
-        self.lbl_query_resumen.setText(self.t("lbl_query_empty"))
+        self._set_query_resumen(None)
         self._actualizar_capa_provisional_query()
         self.actualizar_conteos()
         QMessageBox.information(self, self.t("ok_title"), self.t("msg_delete_ok_body", n=borrados, tabla=tabla))
@@ -8800,6 +10317,7 @@ class GNSSeismicController(QWidget):
             self.cb_query_preset.blockSignals(False)
         self.ejecutar_consulta()
 
+    @_escritura()
     def reemplazar_por_columna(self):
         """Botón "Reemplazar todos...": reemplaza, en TODAS las filas de
         `tabla` donde `columna` matchea el valor de "Buscar" (exacto o
@@ -8989,6 +10507,7 @@ class GNSSeismicController(QWidget):
         fids_lista = list(fids)
         QTimer.singleShot(0, lambda: self._confirmar_borrado_capa_query(fids_lista))
 
+    @_escritura()
     def _confirmar_borrado_capa_query(self, fids):
         """Lógica real del borrado desde el mapa (ver
         `_on_query_layer_features_deleted` para por qué se pospone hasta
