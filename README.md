@@ -111,6 +111,11 @@ ceros a la izquierda si el primero no coincide exacto), calcula ΔEste,
 una tolerancia configurable. El resultado se puede subir a la tabla
 `COMPARACION` del proyecto.
 
+También puede comparar **dos consultas SQL** de la base (por ejemplo
+PREPLOT receptoras contra POSTPLOT receptoras): desplegable *Comparar
+dos consultas SQL* en los parámetros, con las mismas consultas
+precargadas, guardadas o importadas que la ventana Base de Datos.
+
 ### 4. Preplot Sísmico
 
 Genera puntos de diseño directamente desde el plugin, sin CSV externo,

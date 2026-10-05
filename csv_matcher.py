@@ -239,3 +239,55 @@ def geographic_to_local_xy(lat: float, lon: float, lat0: float, lon0: float) -> 
     x = math.radians(lon - lon0) * _EARTH_RADIUS_M * math.cos(lat0_rad)
     y = math.radians(lat - lat0) * _EARTH_RADIUS_M
     return x, y
+
+
+# --- Puntos a partir del resultado de una consulta SQL (v2.68.0) ------------
+_QUERY_NAME_CANDIDATES = ("station_text", "nombre", "name", "punto", "point", "codigo", "código")
+
+
+def points_from_query_rows(cols: List[str], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convierte el resultado de una consulta SQL de la base del proyecto
+    (columnas + filas como diccionarios, p.ej. de `db_schema.run_query`)
+    en puntos comparables por nombre.
+
+    Detecta las columnas por nombre (sin distinguir mayúsculas):
+      * nombre: Station_Text (o Nombre/Name/Punto/...);
+      * coordenadas: WGS84_Longitude/WGS84_Latitude (kind="geo", se
+        transforman luego al CRS de trabajo con QGIS) y, para las filas que
+        no las tengan, Local_Easting/Local_Northing (kind="local", ya en el
+        CRS de trabajo);
+      * cota: WGS84_Height (o Local_Height), opcional.
+
+    Devuelve [{"name", "kind", "a", "b", "z"}] -- "a","b" = lon,lat (geo)
+    o este,norte (local). Las filas sin nombre o sin coordenadas utilizables
+    se omiten. Lanza ValueError("no_name") o ValueError("no_coords") si la
+    consulta no trae las columnas necesarias.
+    """
+    low = {c.lower(): c for c in cols}
+    name_col = next((low[c] for c in _QUERY_NAME_CANDIDATES if c in low), None)
+    if name_col is None:
+        raise ValueError("no_name")
+    lat_col, lon_col = low.get("wgs84_latitude"), low.get("wgs84_longitude")
+    e_col, n_col = low.get("local_easting"), low.get("local_northing")
+    tiene_geo = lat_col is not None and lon_col is not None
+    tiene_local = e_col is not None and n_col is not None
+    if not (tiene_geo or tiene_local):
+        raise ValueError("no_coords")
+    z_col = low.get("wgs84_height") or low.get("local_height")
+
+    puntos = []
+    for row in rows:
+        nombre = row.get(name_col)
+        if nombre is None or str(nombre).strip() == "":
+            continue
+        z = _to_float(row.get(z_col)) if z_col else None
+        lat = _to_float(row.get(lat_col)) if tiene_geo else None
+        lon = _to_float(row.get(lon_col)) if tiene_geo else None
+        if lat is not None and lon is not None:
+            puntos.append({"name": str(nombre).strip(), "kind": "geo", "a": lon, "b": lat, "z": z})
+            continue
+        este = _to_float(row.get(e_col)) if tiene_local else None
+        norte = _to_float(row.get(n_col)) if tiene_local else None
+        if este is not None and norte is not None:
+            puntos.append({"name": str(nombre).strip(), "kind": "local", "a": este, "b": norte, "z": z})
+    return puntos

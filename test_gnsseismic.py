@@ -1440,6 +1440,60 @@ class TestCSVMatcher(unittest.TestCase):
         self.assertAlmostEqual(y, 0.0, delta=0.01)
 
 
+class TestPointsFromQueryRows(unittest.TestCase):
+    def test_geo_points_with_height(self):
+        cols = ["Station_Text", "WGS84_Latitude", "WGS84_Longitude", "WGS84_Height"]
+        rows = [{"Station_Text": " R1 ", "WGS84_Latitude": "-37.5", "WGS84_Longitude": -69.25, "WGS84_Height": 10}]
+        pts = csv_matcher.points_from_query_rows(cols, rows)
+        self.assertEqual(pts, [{"name": "R1", "kind": "geo", "a": -69.25, "b": -37.5, "z": 10.0}])
+
+    def test_local_points_when_no_geo_columns(self):
+        cols = ["station_text", "local_easting", "local_northing"]
+        rows = [{"station_text": "R2", "local_easting": 1000.5, "local_northing": 2000.25}]
+        pts = csv_matcher.points_from_query_rows(cols, rows)
+        self.assertEqual(pts[0]["kind"], "local")
+        self.assertEqual((pts[0]["a"], pts[0]["b"], pts[0]["z"]), (1000.5, 2000.25, None))
+
+    def test_mixed_rows_fall_back_to_local(self):
+        cols = ["Station_Text", "WGS84_Latitude", "WGS84_Longitude", "Local_Easting", "Local_Northing"]
+        rows = [
+            {"Station_Text": "A", "WGS84_Latitude": -1.0, "WGS84_Longitude": -2.0, "Local_Easting": 5, "Local_Northing": 6},
+            {"Station_Text": "B", "WGS84_Latitude": None, "WGS84_Longitude": None, "Local_Easting": 7, "Local_Northing": 8},
+        ]
+        pts = csv_matcher.points_from_query_rows(cols, rows)
+        self.assertEqual([p["kind"] for p in pts], ["geo", "local"])
+
+    def test_rows_without_name_or_coords_are_skipped(self):
+        cols = ["Station_Text", "Local_Easting", "Local_Northing"]
+        rows = [
+            {"Station_Text": None, "Local_Easting": 1, "Local_Northing": 2},
+            {"Station_Text": "  ", "Local_Easting": 1, "Local_Northing": 2},
+            {"Station_Text": "X", "Local_Easting": None, "Local_Northing": 2},
+            {"Station_Text": "OK", "Local_Easting": 3, "Local_Northing": 4},
+        ]
+        pts = csv_matcher.points_from_query_rows(cols, rows)
+        self.assertEqual([p["name"] for p in pts], ["OK"])
+
+    def test_missing_name_column_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            csv_matcher.points_from_query_rows(["Foo", "Local_Easting", "Local_Northing"], [])
+        self.assertEqual(str(cm.exception), "no_name")
+
+    def test_missing_coordinate_columns_raise(self):
+        with self.assertRaises(ValueError) as cm:
+            csv_matcher.points_from_query_rows(["Station_Text", "Track"], [])
+        self.assertEqual(str(cm.exception), "no_coords")
+
+    def test_matches_between_two_queries_by_name(self):
+        cols = ["Station_Text", "Local_Easting", "Local_Northing"]
+        a = csv_matcher.points_from_query_rows(cols, [{"Station_Text": "R1", "Local_Easting": 100.0, "Local_Northing": 200.0}])
+        b = csv_matcher.points_from_query_rows(cols, [{"Station_Text": "R1", "Local_Easting": 100.04, "Local_Northing": 200.0}])
+        to_pts = lambda L: [{"name": p["name"], "x": p["a"], "y": p["b"], "z": p["z"]} for p in L]
+        res = csv_matcher.match_by_name(to_pts(b), to_pts(a), tolerancia_m=0.1, permitir_aproximado=False)
+        self.assertEqual(res.n_matched, 1)
+        self.assertTrue(res.matched[0]["dentro_tolerancia"])
+
+
 class TestPreplotGenerator(unittest.TestCase):
     def test_grid_basic_geometry(self):
         pts = preplot_generator.generate_grid_preplot(

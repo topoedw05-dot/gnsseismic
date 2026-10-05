@@ -1739,6 +1739,9 @@ class GNSSeismicController(QWidget):
         self._fill_descriptor_combo(self.cb_grilla_descriptor)
         self._fill_descriptor_combo(self.cb_linea_descriptor)
         self._fill_query_preset_combo(keep_selection=True)
+        if hasattr(self, "cb_cmp_query_a"):
+            self._fill_cmp_query_combos(keep_selection=True)
+            self._actualizar_resumen_cmp_sql()
         self._fill_export_format_combo(keep_selection=True)
         self._actualizar_visibilidad_opciones_sps()
         self._render_query_resumen()
@@ -8871,6 +8874,7 @@ class GNSSeismicController(QWidget):
 
         # ---- Tarjeta izquierda: Configuración de la fuente ----
         grp_fuente, v_f = self._tarjeta_card("cmp_card_fuente")
+        self.grp_cmp_fuente = grp_fuente
         fila_modo = QHBoxLayout()
         self.rb_fuente_csv = self._reg(QRadioButton(), "rb_source_csv")
         self.rb_fuente_preplot = self._reg(QRadioButton(), "cmp_rb_preplot")
@@ -8973,6 +8977,43 @@ class GNSSeismicController(QWidget):
         self._celda_campo(gp, 0, 1, "cmp_lbl_tolerancia", self.spn_tolerancia)
         gp.addWidget(self.chk_match_aproximado, 1, 0, 1, 2)
         v_c.addWidget(cont_p)
+
+        # Bloque desplegable (cerrado por defecto): comparar el resultado de
+        # DOS consultas SQL guardadas / precargadas, las mismas de "Base de
+        # Datos" (p.ej. PREPLOT receptoras contra POSTPLOT receptoras).
+        self.acc_cmp_sql = AcordeonSeccion()
+        self.acc_cmp_sql.setSizePolicy(SIZE_POLICY_IGNORED, self.acc_cmp_sql.sizePolicy().verticalPolicy())
+        cont_sql = QWidget()
+        v_sql = QVBoxLayout(cont_sql)
+        v_sql.setContentsMargins(0, 0, 0, 0)
+        v_sql.setSpacing(6)
+        self.chk_cmp_usar_sql = self._reg(ToggleSwitch(), "cmp_chk_usar_sql")
+        self._reg(self.chk_cmp_usar_sql, "cmp_tip_usar_sql", kind="tooltip")
+        v_sql.addWidget(self.chk_cmp_usar_sql)
+        self.cb_cmp_query_a = self._crear_combo_consulta_cmp()
+        self.txt_cmp_sql_a = self._crear_texto_sql_cmp()
+        self.cb_cmp_query_b = self._crear_combo_consulta_cmp()
+        self.txt_cmp_sql_b = self._crear_texto_sql_cmp()
+        self._fill_cmp_query_combos(defecto_a="preplot_all", defecto_b="postplot_all")
+        for key, cb, txt in (
+            ("cmp_lbl_query_a", self.cb_cmp_query_a, self.txt_cmp_sql_a),
+            ("cmp_lbl_query_b", self.cb_cmp_query_b, self.txt_cmp_sql_b),
+        ):
+            lbl = self._reg(QLabel(), key)
+            lbl.setStyleSheet(ESTILO_ROTULO_TENUE)
+            v_sql.addWidget(lbl)
+            v_sql.addWidget(cb)
+            v_sql.addWidget(txt)
+        lbl_nota = self._reg(QLabel(), "cmp_note_sql")
+        lbl_nota.setWordWrap(True)
+        lbl_nota.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_sql.addWidget(lbl_nota)
+        self.acc_cmp_sql.set_contenido(cont_sql)
+        v_c.addWidget(self.acc_cmp_sql)
+        self.cb_cmp_query_a.currentIndexChanged.connect(lambda _i: self._on_cmp_query_cambiada("a"))
+        self.cb_cmp_query_b.currentIndexChanged.connect(lambda _i: self._on_cmp_query_cambiada("b"))
+        self.chk_cmp_usar_sql.toggled.connect(self._on_cmp_sql_toggled)
+        self._actualizar_resumen_cmp_sql()
         v_c.addStretch(1)
         self.btn_comparar = self._reg(QPushButton(), "cmp_btn_comparar")
         self.btn_comparar.setStyleSheet(ESTILO_BTN_PRIMARIO)
@@ -9026,6 +9067,140 @@ class GNSSeismicController(QWidget):
         self._toggle_fuente_diseno()
         return w
 
+    # -- Comparar dos consultas SQL (v2.68.0) -------------------------------
+    def _crear_combo_consulta_cmp(self):
+        cb = QComboBox()
+        cb.setSizeAdjustPolicy(_valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy"))
+        cb.setMinimumContentsLength(14)
+        return cb
+
+    def _crear_texto_sql_cmp(self):
+        txt = QPlainTextEdit()
+        alto = (
+            txt.fontMetrics().lineSpacing() * 2
+            + int(txt.document().documentMargin() * 2) + 2 * txt.frameWidth() + 2
+        )
+        txt.setFixedHeight(alto)
+        return txt
+
+    def _sql_para_clave_consulta(self, key):
+        """SQL asociado a una entrada de los combos de consultas (preset de
+        fábrica, con el override que el usuario haya guardado, o consulta
+        propia/importada); None para "Personalizada"."""
+        if not key:
+            return None
+        if isinstance(key, str) and key.startswith("custom_query:"):
+            nombre = key[len("custom_query:"):]
+            for q in self._load_custom_queries():
+                if q["name"] == nombre:
+                    return q["sql"]
+            return None
+        return self._get_effective_preset_sql(key)
+
+    def _fill_cmp_query_combos(self, keep_selection=False, defecto_a=None, defecto_b=None):
+        """(Re)llena los combos A y B de "Comparar dos consultas SQL" con la
+        MISMA lista de "Base de Datos": consultas de ejemplo + las propias
+        guardadas/importadas (p.ej. las de un .qrylt de GPSeismic)."""
+        if not hasattr(self, "cb_cmp_query_a"):
+            return
+        for cb, txt, defecto in (
+            (self.cb_cmp_query_a, self.txt_cmp_sql_a, defecto_a),
+            (self.cb_cmp_query_b, self.txt_cmp_sql_b, defecto_b),
+        ):
+            actual = cb.currentData() if (keep_selection and cb.count()) else defecto
+            cb.blockSignals(True)
+            cb.clear()
+            for key in self._PRESET_ORDER:
+                cb.addItem(self.t(self._PRESET_KEY_LABELS[key]), key)
+            for q in self._load_custom_queries():
+                cb.addItem(q["name"], f"custom_query:{q['name']}")
+            idx = cb.findData(actual) if actual is not None else -1
+            cb.setCurrentIndex(idx if idx >= 0 else 0)
+            cb.blockSignals(False)
+            if not keep_selection:
+                sql = self._sql_para_clave_consulta(cb.currentData())
+                if sql:
+                    txt.setPlainText(sql)
+        self._actualizar_resumen_cmp_sql()
+
+    def _on_cmp_query_cambiada(self, lado):
+        cb = self.cb_cmp_query_a if lado == "a" else self.cb_cmp_query_b
+        txt = self.txt_cmp_sql_a if lado == "a" else self.txt_cmp_sql_b
+        sql = self._sql_para_clave_consulta(cb.currentData())
+        if sql:
+            txt.setPlainText(sql)
+        self._actualizar_resumen_cmp_sql()
+
+    def _cmp_sql_activo(self):
+        chk = getattr(self, "chk_cmp_usar_sql", None)
+        return chk is not None and chk.isChecked()
+
+    def _on_cmp_sql_toggled(self, activo):
+        # Con consultas SQL, la fuente (CSV/PREPLOT) y la tabla a comparar
+        # no se usan: se deshabilitan para que no confundan.
+        self.grp_cmp_fuente.setEnabled(not activo)
+        self.cb_tabla_levantado.setEnabled(not activo)
+        self._toggle_fuente_diseno()
+        self._actualizar_resumen_cmp_sql()
+
+    def _actualizar_resumen_cmp_sql(self):
+        if not hasattr(self, "acc_cmp_sql"):
+            return
+        if self._cmp_sql_activo():
+            resumen = self.t(
+                "cmp_acc_resumen_on", a=self.cb_cmp_query_a.currentText(), b=self.cb_cmp_query_b.currentText()
+            )
+        else:
+            resumen = self.t("cmp_acc_resumen_off")
+        self.acc_cmp_sql.set_textos(self.t("cmp_acc_titulo"), resumen)
+
+    def _puntos_desde_consulta(self, sql, dest_crs):
+        """Ejecuta `sql` (sólo SELECT) y devuelve sus puntos [{name,x,y,z}]
+        en el CRS de trabajo. Lanza ValueError con un mensaje legible."""
+        try:
+            cols, rows = db_schema.run_query(self.conn, sql)
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(self.t("cmp_err_sql_ejecutar", error=e))
+        try:
+            crudos = csv_matcher.points_from_query_rows(cols, rows)
+        except ValueError as e:
+            clave = "cmp_err_sql_sin_nombre" if str(e) == "no_name" else "cmp_err_sql_sin_coords"
+            raise ValueError(self.t(clave))
+        puntos = []
+        for p in crudos:
+            if p["kind"] == "geo":
+                x, y = _transform_xy(p["a"], p["b"], self.crs_wgs84, dest_crs, self.project)
+            else:
+                x, y = p["a"], p["b"]
+            puntos.append({"name": p["name"], "x": x, "y": y, "z": p["z"]})
+        return puntos
+
+    def _preparar_comparacion_sql(self, dest_crs):
+        """Arma (diseño, levantado, etiqueta_diseño, etiqueta_levantado) a
+        partir de las consultas A (diseño) y B (levantado); None si algo
+        falla (ya avisó al usuario)."""
+        nombre_a = self.cb_cmp_query_a.currentText()
+        nombre_b = self.cb_cmp_query_b.currentText()
+        resultados = []
+        for letra, sql, nombre in (
+            ("A", self.txt_cmp_sql_a.toPlainText(), nombre_a),
+            ("B", self.txt_cmp_sql_b.toPlainText(), nombre_b),
+        ):
+            try:
+                puntos = self._puntos_desde_consulta(sql, dest_crs)
+            except ValueError as e:
+                QMessageBox.warning(self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), str(e))
+                return None
+            if not puntos:
+                QMessageBox.warning(
+                    self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), self.t("cmp_err_sql_vacia")
+                )
+                return None
+            resultados.append(puntos)
+        return resultados[0], resultados[1], self.t("cmp_origen_sql", nombre=nombre_a), nombre_b
+
     def _actualizar_crs_csv_habilitado(self, *_args):
         if getattr(self, "cont_csv_crs", None) is not None:
             self.cont_csv_crs.setEnabled(self.rb_plana.isChecked())
@@ -9042,8 +9217,12 @@ class GNSSeismicController(QWidget):
         self.grp_csv.setVisible(usa_csv)
         self._actualizar_crs_csv_habilitado()
         self.lbl_preplot_source_note.setVisible(not usa_csv)
-        self.chk_subir_preplot.setEnabled(usa_csv)
-        if not usa_csv:
+        usa_sql = self._cmp_sql_activo()
+        self.chk_subir_preplot.setEnabled(usa_csv and not usa_sql)
+        if usa_sql:
+            self.chk_subir_preplot.setChecked(False)
+            self.chk_subir_preplot.setToolTip(self.t("cmp_tip_subir_sql"))
+        elif not usa_csv:
             self.chk_subir_preplot.setChecked(False)
             self.chk_subir_preplot.setToolTip(self.t("tip_upload_preplot_disabled"))
         else:
@@ -9190,7 +9369,13 @@ class GNSSeismicController(QWidget):
             return
         dest_crs = self._working_crs()
 
-        if self.rb_fuente_csv.isChecked():
+        usa_sql = self._cmp_sql_activo()
+        if usa_sql:
+            preparado = self._preparar_comparacion_sql(dest_crs)
+            if preparado is None:
+                return
+            diseno, levantado, origen_diseno_label, tabla = preparado
+        elif self.rb_fuente_csv.isChecked():
             csv_path = self.lbl_csv_path.text()
             if not csv_path:
                 QMessageBox.information(self, self.t("info_missing_csv_title"), self.t("info_missing_csv_body"))
@@ -9230,15 +9415,16 @@ class GNSSeismicController(QWidget):
         self.design_points = diseno
         self._origen_diseno_label = origen_diseno_label
 
-        tabla = self.cb_tabla_levantado.currentText()
-        if not self.rb_fuente_csv.isChecked() and tabla == "PREPLOT":
-            QMessageBox.warning(self, self.t("warn_same_table_title"), self.t("warn_same_table_body"))
-            return
+        if not usa_sql:
+            tabla = self.cb_tabla_levantado.currentText()
+            if not self.rb_fuente_csv.isChecked() and tabla == "PREPLOT":
+                QMessageBox.warning(self, self.t("warn_same_table_title"), self.t("warn_same_table_body"))
+                return
 
-        levantado = self._fetch_levantado_xy(tabla, dest_crs)
-        if not levantado:
-            QMessageBox.warning(self, self.t("warn_no_points_title"), self.t("warn_no_points_body", tabla=tabla))
-            return
+            levantado = self._fetch_levantado_xy(tabla, dest_crs)
+            if not levantado:
+                QMessageBox.warning(self, self.t("warn_no_points_title"), self.t("warn_no_points_body", tabla=tabla))
+                return
 
         tolerancia = self.spn_tolerancia.value()
         aproximado = self.chk_match_aproximado.isChecked()
@@ -9356,7 +9542,10 @@ class GNSSeismicController(QWidget):
 
         try:
             n_pre = 0
-            if self.chk_subir_preplot.isChecked() and self.design_points and self.rb_fuente_csv.isChecked():
+            if (
+                self.chk_subir_preplot.isChecked() and self.design_points
+                and self.rb_fuente_csv.isChecked() and not self._cmp_sql_activo()
+            ):
                 dest_crs = self._working_crs()
                 filas_preplot = []
                 for p in self.design_points:
@@ -9750,6 +9939,8 @@ class GNSSeismicController(QWidget):
         idx = self.cb_query_preset.findData(current_data)
         self.cb_query_preset.setCurrentIndex(idx if idx >= 0 else 1)
         self.cb_query_preset.blockSignals(False)
+        # Que "Comparar dos consultas SQL" vea también las consultas nuevas.
+        self._fill_cmp_query_combos(keep_selection=True)
 
     def _fill_export_format_combo(self, keep_selection=False):
         """Repuebla `cb_export_format` (combo "Formato de exportación:",
