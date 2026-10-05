@@ -321,6 +321,12 @@ COLOR_KI = "#1f78b4"
 COLOR_SO = "#e31a1c"
 COLOR_DENTRO = QColor(200, 255, 200)
 COLOR_FUERA = QColor(255, 200, 200)
+# Tabla de "Comparar": tintes más suaves + texto oscuro fijo (legibles en tema oscuro).
+COLOR_CMP_DENTRO = QColor(214, 240, 214)
+COLOR_CMP_FUERA = QColor(250, 214, 214)
+COLOR_CMP_TEXTO = QColor(33, 33, 33)
+COMPARAR_COL_DIST = 5  # "Dist. 2D"
+COMPARAR_COL_TOL = 6   # "¿Tolerancia?"
 # Fondo de la celda "Nombre" de un punto marcado `ambiguous_reoccupation`
 # (reocupación ambigua, prefijo "?" -- ver `DCPoint.ambiguous_reoccupation`)
 # o todavía `deleted` en su estado final (prefijo "D") -- pedido del
@@ -8849,129 +8855,180 @@ class GNSSeismicController(QWidget):
         self._provisional_preplot_ext_layer = layer
 
     # -- Sección: Comparar --------------------------------------------------
+    # -- Sección: Comparar (rediseño v2.67.0) -------------------------------
+    # Arriba, dos tarjetas 50/50: "Configuración de la fuente" (CSV o tabla
+    # PREPLOT; el formulario de mapeo del CSV sólo se ve con "Archivo CSV") y
+    # "Parámetros de comparación" (tabla, tolerancia, emparejamiento
+    # aproximado y el botón "Ejecutar comparación" al fondo). En el medio, la
+    # tabla de discrepancias con todo el alto sobrante; abajo, una única
+    # barra con las salidas (capa QGIS / CSV a la izquierda; interruptor
+    # "Guardar también fuentes en PREPLOT" y botón verde a la derecha).
     def _build_tab_comparar(self):
         w = QWidget()
         v = QVBoxLayout(w)
+        v.setSpacing(6)
         self._agregar_boton_ayuda(v, ["comparar_intro"], "tab4_title")
 
-        grp_src = self._reg(QGroupBox(), "grp_source", kind="title")
-        h_src = QHBoxLayout(grp_src)
+        # ---- Tarjeta izquierda: Configuración de la fuente ----
+        grp_fuente, v_f = self._tarjeta_card("cmp_card_fuente")
+        fila_modo = QHBoxLayout()
         self.rb_fuente_csv = self._reg(QRadioButton(), "rb_source_csv")
-        self.rb_fuente_preplot = self._reg(QRadioButton(), "rb_source_preplot")
+        self.rb_fuente_preplot = self._reg(QRadioButton(), "cmp_rb_preplot")
         self.rb_fuente_csv.setChecked(True)
         grupo_fuente = QButtonGroup(self)
         grupo_fuente.addButton(self.rb_fuente_csv)
         grupo_fuente.addButton(self.rb_fuente_preplot)
-        h_src.addWidget(self.rb_fuente_csv)
-        h_src.addWidget(self.rb_fuente_preplot)
-        v.addWidget(grp_src)
+        fila_modo.addWidget(self.rb_fuente_csv)
+        fila_modo.addWidget(self.rb_fuente_preplot)
+        fila_modo.addStretch(1)
+        v_f.addLayout(fila_modo)
 
-        self.grp_csv = self._reg(QGroupBox(), "grp_csv_data", kind="title")
+        # Formulario del CSV: se oculta entero con "Tabla PREPLOT"
+        # (`_toggle_fuente_diseno`). Se conserva el nombre `grp_csv`.
+        self.grp_csv = QWidget()
         v_csv = QVBoxLayout(self.grp_csv)
+        v_csv.setContentsMargins(0, 0, 0, 0)
+        v_csv.setSpacing(6)
+
+        lbl_ruta = self._reg(QLabel(), "cmp_lbl_ruta_csv")
+        lbl_ruta.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_csv.addWidget(lbl_ruta)
         fila_csv = QHBoxLayout()
         self.lbl_csv_path = QLineEdit()
         self.lbl_csv_path.setReadOnly(True)
-        btn_csv = self._reg(QPushButton(), "btn_load_csv")
+        self._reg(self.lbl_csv_path, "cmp_ph_ruta_csv", kind="placeholder")
+        btn_csv = self._reg(QPushButton(), "cmp_btn_cargar")
         btn_csv.clicked.connect(self.cargar_csv)
-        fila_csv.addWidget(self.lbl_csv_path)
+        fila_csv.addWidget(self.lbl_csv_path, 1)
         fila_csv.addWidget(btn_csv)
         v_csv.addLayout(fila_csv)
 
-        form_cols = QFormLayout()
-        self.cb_col_nombre = QComboBox()
-        self.cb_col_x = QComboBox()
-        self.cb_col_y = QComboBox()
-        self.cb_col_z = QComboBox()
-        self._form_row(form_cols, "lbl_col_name", self.cb_col_nombre)
-        self._form_row(form_cols, "lbl_col_x", self.cb_col_x)
-        self._form_row(form_cols, "lbl_col_y", self.cb_col_y)
-        self._form_row(form_cols, "lbl_col_z", self.cb_col_z)
-        v_csv.addLayout(form_cols)
+        self.cb_col_nombre = self._combo_campo()
+        self.cb_col_x = self._combo_campo()
+        self.cb_col_y = self._combo_campo()
+        self.cb_col_z = self._combo_campo()
+        cont_cols, g = self._bloque_filas(2)
+        self._celda_campo(g, 0, 0, "cmp_col_nombre", self.cb_col_nombre)
+        self._celda_campo(g, 0, 1, "cmp_col_z", self.cb_col_z)
+        self._celda_campo(g, 1, 0, "cmp_col_x", self.cb_col_x)
+        self._celda_campo(g, 1, 1, "cmp_col_y", self.cb_col_y)
 
-        grp_tipo_coord = self._reg(QGroupBox(), "grp_csv_coord_type", kind="title")
-        h_tipo = QHBoxLayout(grp_tipo_coord)
-        self.rb_geografica = self._reg(QRadioButton(), "rb_geographic")
-        self.rb_plana = self._reg(QRadioButton(), "rb_planar")
+        # Fila 4: tipo de coordenadas | CRS.
+        cont_tipo = QWidget()
+        v_tipo = QVBoxLayout(cont_tipo)
+        v_tipo.setContentsMargins(0, 0, 0, 0)
+        v_tipo.setSpacing(2)
+        lbl_tipo = self._reg(QLabel(), "cmp_lbl_tipo_coord")
+        lbl_tipo.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_tipo.addWidget(lbl_tipo)
+        h_tipo = QHBoxLayout()
+        self.rb_plana = self._reg(QRadioButton(), "cmp_rb_planas")
+        self.rb_geografica = self._reg(QRadioButton(), "cmp_rb_geograficas")
         self.rb_plana.setChecked(True)
         grupo_tipo = QButtonGroup(self)
-        grupo_tipo.addButton(self.rb_geografica)
         grupo_tipo.addButton(self.rb_plana)
-        h_tipo.addWidget(self.rb_geografica)
+        grupo_tipo.addButton(self.rb_geografica)
         h_tipo.addWidget(self.rb_plana)
-        v_csv.addWidget(grp_tipo_coord)
+        h_tipo.addWidget(self.rb_geografica)
+        h_tipo.addStretch(1)
+        v_tipo.addLayout(h_tipo)
+        g.addWidget(cont_tipo, 2, 0)
 
         if QgsProjectionSelectionWidget is not None:
             self.csv_crs_widget = QgsProjectionSelectionWidget()
             self.csv_crs_widget.setCrs(QgsCoordinateReferenceSystem("EPSG:9377"))
-            v_csv.addWidget(self._reg(QLabel(), "lbl_csv_crs"))
-            v_csv.addWidget(self.csv_crs_widget)
+            self.cont_csv_crs = self._celda_campo(g, 2, 1, "cmp_lbl_crs", self.csv_crs_widget)
         else:
             self.csv_crs_widget = None
-
-        v.addWidget(self.grp_csv)
+            self.cont_csv_crs = None
+        v_csv.addWidget(cont_cols)
+        v_f.addWidget(self.grp_csv)
 
         self.lbl_preplot_source_note = self._reg(QLabel(), "info_preplot_source_note")
         self.lbl_preplot_source_note.setWordWrap(True)
         self.lbl_preplot_source_note.setVisible(False)
-        v.addWidget(self.lbl_preplot_source_note)
+        v_f.addWidget(self.lbl_preplot_source_note)
+        v_f.addStretch(1)
 
         self.rb_fuente_csv.toggled.connect(self._toggle_fuente_diseno)
         self.rb_fuente_preplot.toggled.connect(self._toggle_fuente_diseno)
+        # El CRS del CSV sólo aplica a coordenadas planas.
+        self.rb_plana.toggled.connect(self._actualizar_crs_csv_habilitado)
 
-        grp_comp = self._reg(QGroupBox(), "grp_compare", kind="title")
-        v_comp = QVBoxLayout(grp_comp)
-        fila_comp = QHBoxLayout()
-        fila_comp.addWidget(self._reg(QLabel(), "lbl_compare_against"))
+        # ---- Tarjeta derecha: Parámetros de comparación y tolerancia ----
+        grp_comp, v_c = self._tarjeta_card("cmp_card_param")
         self.cb_tabla_levantado = QComboBox()
         self.cb_tabla_levantado.addItems(["POSTPLOT", "PREPLOT"])
-        fila_comp.addWidget(self.cb_tabla_levantado)
-        fila_comp.addWidget(self._reg(QLabel(), "lbl_tolerance"))
         self.spn_tolerancia = QDoubleSpinBox()
         self.spn_tolerancia.setDecimals(3)
         self.spn_tolerancia.setRange(0.001, 1000.0)
         self.spn_tolerancia.setSingleStep(0.01)
         self.spn_tolerancia.setValue(0.10)
-        fila_comp.addWidget(self.spn_tolerancia)
+        self.spn_tolerancia.setSuffix(" m")
         self.chk_match_aproximado = self._reg(QCheckBox(), "chk_approx_match")
         self.chk_match_aproximado.setChecked(True)
         self._reg(self.chk_match_aproximado, "tip_approx_match", kind="tooltip")
-        fila_comp.addWidget(self.chk_match_aproximado)
-        v_comp.addLayout(fila_comp)
+        cont_p, gp = self._bloque_filas(2)
+        self._celda_campo(gp, 0, 0, "cmp_lbl_contra", self.cb_tabla_levantado)
+        self._celda_campo(gp, 0, 1, "cmp_lbl_tolerancia", self.spn_tolerancia)
+        gp.addWidget(self.chk_match_aproximado, 1, 0, 1, 2)
+        v_c.addWidget(cont_p)
+        v_c.addStretch(1)
+        self.btn_comparar = self._reg(QPushButton(), "cmp_btn_comparar")
+        self.btn_comparar.setStyleSheet(ESTILO_BTN_PRIMARIO)
+        self.btn_comparar.setMinimumHeight(36)
+        self.btn_comparar.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
+        self.btn_comparar.clicked.connect(self.comparar)
+        v_c.addWidget(self.btn_comparar)
 
-        btn_comparar = self._reg(QPushButton(), "btn_compare")
-        btn_comparar.clicked.connect(self.comparar)
-        v_comp.addWidget(btn_comparar)
+        for g_ in (grp_fuente, grp_comp):
+            g_.setSizePolicy(SIZE_POLICY_IGNORED, g_.sizePolicy().verticalPolicy())
+        grid_arriba = QGridLayout()
+        grid_arriba.setColumnStretch(0, 1)
+        grid_arriba.setColumnStretch(1, 1)
+        grid_arriba.setHorizontalSpacing(10)
+        grid_arriba.addWidget(grp_fuente, 0, 0)
+        grid_arriba.addWidget(grp_comp, 0, 1)
+        v.addLayout(grid_arriba)
 
+        # ---- Centro: resumen + tabla de discrepancias ----
         self.lbl_resumen_comparacion = QLabel("")
-        v_comp.addWidget(self.lbl_resumen_comparacion)
+        self.lbl_resumen_comparacion.setWordWrap(True)
+        self.lbl_resumen_comparacion.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v.addWidget(self.lbl_resumen_comparacion)
 
         self.tbl_resultado = QTableWidget(0, 7)
         self.tbl_resultado.setHorizontalHeaderLabels(self._comparar_headers())
         self.tbl_resultado.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        v_comp.addWidget(self.tbl_resultado)
+        self.tbl_resultado.verticalHeader().setDefaultSectionSize(24)
+        self.tbl_resultado.setMinimumHeight(240)
+        v.addWidget(self.tbl_resultado, 1)
 
-        fila_acciones = QHBoxLayout()
-        btn_capa = self._reg(QPushButton(), "btn_create_compare_layer")
-        btn_capa.clicked.connect(self.crear_capa_comparacion)
-        btn_export = self._reg(QPushButton(), "btn_export_compare_csv")
-        btn_export.clicked.connect(self.exportar_comparacion)
-        fila_acciones.addWidget(btn_capa)
-        fila_acciones.addWidget(btn_export)
-        v_comp.addLayout(fila_acciones)
-
-        grp_subir = self._reg(QGroupBox(), "grp_upload", kind="title")
-        v_subir = QVBoxLayout(grp_subir)
-        self.chk_subir_preplot = self._reg(QCheckBox(), "chk_upload_preplot")
+        # ---- Barra inferior unificada: todas las salidas ----
+        barra = QHBoxLayout()
+        barra.addWidget(self._boton_barra("cmp_tb_capa", "cmp_tip_capa", self.crear_capa_comparacion))
+        barra.addWidget(self._boton_barra("cmp_tb_csv", "cmp_tip_csv", self.exportar_comparacion))
+        barra.addStretch(1)
+        self.chk_subir_preplot = self._reg(ToggleSwitch(), "cmp_chk_subir_preplot")
         self.chk_subir_preplot.setChecked(True)
-        v_subir.addWidget(self.chk_subir_preplot)
-        btn_subir = self._reg(QPushButton(), "btn_upload_db")
-        btn_subir.clicked.connect(self.subir_a_bd)
-        v_subir.addWidget(btn_subir)
-        v.addWidget(grp_comp)
-        v.addWidget(grp_subir)
+        barra.addWidget(self.chk_subir_preplot)
+        barra.addSpacing(8)
+        self.btn_subir_comparacion = self._reg(QPushButton(), "cmp_btn_guardar")
+        self.btn_subir_comparacion.setStyleSheet(ESTILO_BTN_SUBIR_VERDE)
+        self.btn_subir_comparacion.setMinimumHeight(40)
+        self.btn_subir_comparacion.setMinimumWidth(260)
+        self.btn_subir_comparacion.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
+        self.btn_subir_comparacion.clicked.connect(self.subir_a_bd)
+        barra.addWidget(self.btn_subir_comparacion)
+        v.addLayout(barra)
 
+        w.setStyleSheet(ESTILO_TARJETAS)
         self._toggle_fuente_diseno()
         return w
+
+    def _actualizar_crs_csv_habilitado(self, *_args):
+        if getattr(self, "cont_csv_crs", None) is not None:
+            self.cont_csv_crs.setEnabled(self.rb_plana.isChecked())
 
     def _comparar_headers(self):
         return [
@@ -8981,7 +9038,9 @@ class GNSSeismicController(QWidget):
 
     def _toggle_fuente_diseno(self):
         usa_csv = self.rb_fuente_csv.isChecked()
-        self.grp_csv.setEnabled(usa_csv)
+        # Con "Tabla PREPLOT" el formulario de mapeo del CSV se OCULTA.
+        self.grp_csv.setVisible(usa_csv)
+        self._actualizar_crs_csv_habilitado()
         self.lbl_preplot_source_note.setVisible(not usa_csv)
         self.chk_subir_preplot.setEnabled(usa_csv)
         if not usa_csv:
@@ -9204,10 +9263,20 @@ class GNSSeismicController(QWidget):
                 f"{m['delta_x']:.3f}", f"{m['delta_y']:.3f}", f"{m['distancia_2d']:.3f}",
                 self.t("yes") if m["dentro_tolerancia"] else self.t("no"),
             ]
-            color = COLOR_DENTRO if m["dentro_tolerancia"] else COLOR_FUERA
+            dentro = m["dentro_tolerancia"]
+            # Tinte sutil por fila (verde: dentro de tolerancia; rojo suave:
+            # fuera), con texto oscuro fijo para que se lea también con un
+            # tema oscuro; la distancia 2D se resalta en negrita si se pasa.
+            color = COLOR_CMP_DENTRO if dentro else COLOR_CMP_FUERA
+            valores[COMPARAR_COL_TOL] = ("✔ " if dentro else "✖ ") + valores[COMPARAR_COL_TOL]
             for col, val in enumerate(valores):
                 item = QTableWidgetItem(str(val))
                 item.setBackground(color)
+                item.setForeground(COLOR_CMP_TEXTO)
+                if not dentro and col in (COMPARAR_COL_DIST, COMPARAR_COL_TOL):
+                    fuente = item.font()
+                    fuente.setBold(True)
+                    item.setFont(fuente)
                 self.tbl_resultado.setItem(row, col, item)
 
     def crear_capa_comparacion(self):
