@@ -3421,5 +3421,20 @@ class TestSharedProject(unittest.TestCase):
         )
 
 
+class MetadataTxtTests(unittest.TestCase):
+    """plugins.qgis.org lee metadata.txt con `configparser` CON interpolación:
+    un '%' suelto (no '%%' ni '%(') rechaza el ZIP ("'%' must be followed by
+    '%' or '('"). Esta prueba lo atrapa antes de subir."""
+
+    def test_metadata_se_lee_con_interpolacion(self):
+        import configparser
+        ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.txt")
+        cp = configparser.ConfigParser()
+        cp.read(ruta, encoding="utf-8")
+        for clave, _valor in cp.items("general"):
+            cp.get("general", clave)  # fuerza la interpolación de cada valor
+        self.assertTrue(cp.get("general", "version"))
+
+
 if __name__ == "__main__":
     unittest.main()
