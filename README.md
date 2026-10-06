@@ -34,7 +34,7 @@ español e inglés en el momento, sin reiniciar el plugin.
 
 ## Qué hace
 
-El toolbar **GNSSeismic** tiene cinco íconos, uno por sección; cada uno
+El toolbar **GNSSeismic** tiene cuatro íconos, uno por sección; cada uno
 abre su sección en una ventana independiente y no modal (podés tener
 varias abiertas a la vez).
 
@@ -100,23 +100,7 @@ también la altura ortométrica (`Local_Height = WGS84_Height − N`). Al
 confirmar, los puntos se insertan en `POSTPLOT` y se crea una capa de
 puntos en el proyecto de QGIS, simbolizada por tipo.
 
-### 3. Comparar
-
-Compara puntos levantados contra puntos de diseño, cuya fuente puede ser
-un **CSV** cargado por el usuario (con mapeo de columnas) o directamente
-la **tabla PREPLOT** ya guardada en la base del proyecto. Empareja por
-nombre de punto (con un segundo intento ignorando guiones, espacios y
-ceros a la izquierda si el primero no coincide exacto), calcula ΔEste,
-ΔNorte y distancia 2D/3D, y marca qué puntos quedan dentro o fuera de
-una tolerancia configurable. El resultado se puede subir a la tabla
-`COMPARACION` del proyecto.
-
-También puede comparar **dos consultas SQL** de la base (por ejemplo
-PREPLOT receptoras contra POSTPLOT receptoras): desplegable *Comparar
-dos consultas SQL* en los parámetros, con las mismas consultas
-precargadas, guardadas o importadas que la ventana Base de Datos.
-
-### 4. Preplot Sísmico
+### 3. Preplot Sísmico
 
 Genera puntos de diseño directamente desde el plugin, sin CSV externo,
 en **Grilla 3D** (origen + azimut + espaciamientos + cantidad de
@@ -127,14 +111,27 @@ otro software: un archivo **SPS** (SEG rev. 2.1), un archivo **.qld**
 capa de puntos ya cargada en QGIS (Shapefile, GeoPackage, CSV). Todo se
 guarda en la tabla `PREPLOT`.
 
-### 5. Base de Datos
+### 4. Base de Datos
 
-Editor de consultas SQL de sólo lectura (`SELECT`/`WITH`) sobre la base
-del proyecto, con presets comunes y una sección "Buscar / Buscar y
+Consola de consultas SQL de sólo lectura (`SELECT`/`WITH`) sobre la base
+del proyecto, con presets comunes y un asistente de filtro (columna,
+condición, valor y conector Y/O con el botón "+"; el SQL completo queda
+en "Modo Desarrollador (SQL)"), además de una sección "Buscar / Buscar y
 reemplazar" para no tener que escribir SQL a mano. El resultado se
 muestra como capa temporal en el mapa, admite edición en línea y borrado
 de filas seleccionadas, y se puede exportar a **Shapefile**, **GeoPackage**,
-**CSV** o **SPS** (.S01/.R01).
+**CSV** o **SPS** (.S01/.R01). El mapeo de columnas y el formato de salida
+están plegados bajo un único botón expandible al pie de la ventana,
+"Exportar consulta a:", para dejar el máximo espacio a la tabla.
+
+Junto a "Buscar y reemplazar" hay una fila **Comparar dos consultas SQL**
+(por ejemplo PREPLOT receptoras contra POSTPLOT receptoras): se elige una
+consulta A (capa 1) y una B (capa 2) de la misma lista de la consola
+(precargadas, guardadas o importadas) y se pulsa el botón azul. El plugin
+agrega al mapa las dos capas de puntos unidas por líneas donde el nombre
+coincide exactamente (los puntos sin pareja llevan otro ícono) y muestra
+cuántos puntos hay en cada capa, cuántos coinciden y cuántos no. Es sólo
+de lectura: no escribe en la base.
 
 ## Formatos de archivo de campo soportados
 
@@ -179,16 +176,16 @@ modelo), es muy probable que el parser necesite un ajuste menor.
    "Mostrar también los complementos experimentales"`.
 5. En `Complementos > Administrar e instalar complementos > Instalados`,
    marca **"GNSSeismic"**.
-6. Aparecerá un nuevo toolbar **"GNSSeismic"** con cinco íconos (uno por
+6. Aparecerá un nuevo toolbar **"GNSSeismic"** con cuatro íconos (uno por
    sección) y una entrada **GNSSeismic** en el menú **Complementos** con
-   esas mismas cinco acciones, por si prefieres el menú o tienes el
+   esas mismas cuatro acciones, por si prefieres el menú o tienes el
    toolbar oculto.
 
 ## Idioma
 
 El toolbar del plugin incluye un selector **Idioma / Language** (Español
 / English) que cambia toda la interfaz —títulos de ventana, etiquetas,
-botones, mensajes, de las cinco secciones a la vez, estén o no abiertas
+botones, mensajes, de las cuatro secciones a la vez, estén o no abiertas
 en ese momento— sin perder lo que ya se cargó (proyecto abierto,
 archivos cargados, resultados de una consulta, etc.). Los datos
 guardados en la base (nombres de tabla, valores de `Descriptor`, etc.)
@@ -199,10 +196,10 @@ compatibilidad con el software de origen.
 
 - `metadata.txt`, `__init__.py`, `icon.png` — metadatos del plugin.
 - `gnsseismic.py` — registro del plugin en QGIS: arma el toolbar
-  "GNSSeismic" (cinco íconos + selector de idioma) y el menú de
+  "GNSSeismic" (cuatro íconos + selector de idioma) y el menú de
   Complementos; delega la lógica al controlador de `gnsseismic_windows.py`.
 - `gnsseismic_windows.py` — `GNSSeismicController` (estado compartido y
-  lógica de las cinco secciones) y `_SectionWindow` (la ventana no modal
+  lógica de las cuatro secciones) y `_SectionWindow` (la ventana no modal
   que envuelve cada sección); integración con capas/CRS/ráster de QGIS.
   Enums escopados de Qt6 + fallback PyQt5.
 - `i18n.py` — diccionario de traducciones ES/EN y la función `t()` que las
@@ -280,7 +277,7 @@ compatibilidad con el software de origen.
   construyeron por inspección directa de archivos reales y, cuando fue
   posible, verificación contra bases de datos POSTPLOT reales de
   GPSeismic.
-- Cada sección abre en su propia ventana (no modal), y las cinco se
+- Cada sección abre en su propia ventana (no modal), y las cuatro se
   arman al activar el plugin (no sólo cuando se abren por primera vez),
   para que un cambio en "Proyecto" (por ejemplo, cargar un geoide nuevo)
   se refleje de inmediato en las otras secciones aunque todavía no se

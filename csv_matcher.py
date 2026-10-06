@@ -291,3 +291,32 @@ def points_from_query_rows(cols: List[str], rows: List[Dict[str, Any]]) -> List[
         if este is not None and norte is not None:
             puntos.append({"name": str(nombre).strip(), "kind": "local", "a": este, "b": norte, "z": z})
     return puntos
+
+
+def pair_points_by_name(a: List[Dict[str, Any]], b: List[Dict[str, Any]]):
+    """Empareja los puntos de dos conjuntos por nombre EXACTO (sin
+    distinguir distancia): `a` y `b` son listas de {"name","x","y","z"}.
+
+    Un nombre repetido se empareja como un multiconjunto: el primer punto
+    de `a` con ese nombre se une al primero de `b`, el segundo con el
+    segundo, y así; los que sobran de un lado quedan sin pareja.
+
+    Devuelve (pares, solo_a, solo_b): `pares` = [(punto_a, punto_b)] en el
+    orden de `a`; `solo_a`/`solo_b` = puntos sin pareja en el otro
+    conjunto (en su orden original)."""
+    pendientes: Dict[str, List[Dict[str, Any]]] = {}
+    for p in b:
+        pendientes.setdefault(p["name"], []).append(p)
+    usados = set()
+    pares = []
+    solo_a = []
+    for p in a:
+        cola = pendientes.get(p["name"])
+        if cola:
+            q = cola.pop(0)
+            usados.add(id(q))
+            pares.append((p, q))
+        else:
+            solo_a.append(p)
+    solo_b = [p for p in b if id(p) not in usados]
+    return pares, solo_a, solo_b

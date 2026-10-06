@@ -35,8 +35,6 @@ TR = {
     "lang_en": {"es": "Inglés", "en": "English"},
     "btn_close": {"es": "Cerrar", "en": "Close"},
     "btn_help_tooltip": {"es": "Ayuda de esta sección", "en": "Help for this section"},
-    "yes": {"es": "Sí", "en": "Yes"},
-    "no": {"es": "No", "en": "No"},
     "none_option": {"es": "(ninguna)", "en": "(none)"},
     "ok_title": {"es": "Listo", "en": "Done"},
     "err_title": {"es": "Error", "en": "Error"},
@@ -51,7 +49,6 @@ TR = {
     "tab1_title": {"es": "Proyecto", "en": "Project"},
     "tab2_title": {"es": "Preplot Sísmico", "en": "Seismic Preplot"},
     "tab3_title": {"es": "Importar datos de campo", "en": "Import field data"},
-    "tab4_title": {"es": "Comparar", "en": "Compare"},
     "tab5_title": {"es": "Base de Datos", "en": "Database"},
 
     # -- Sección: Proyecto --------------------------------------------------
@@ -234,7 +231,7 @@ TR = {
     "note_factor_escala": {
         "es": (
             "Este grupo NO afecta las coordenadas Este/Norte que ya calcula "
-            "el plugin en \"Importar datos de campo\"/\"Comparar\"/\"Base de "
+            "el plugin en \"Importar datos de campo\"/\"Base de "
             "Datos\" -- sigue siendo la proyección directa de lat/lon al CRS "
             "de trabajo, sin ningún factor de escala aplicado (investigado y "
             "confirmado en la v2.58.0 contra bases de datos reales de "
@@ -264,7 +261,7 @@ TR = {
         ),
         "en": (
             "This group does NOT affect the Easting/Northing the plugin "
-            "already computes in \"Import field data\"/\"Compare\"/\"Database\" "
+            "already computes in \"Import field data\"/\"Database\" "
             "-- that is still a direct projection of lat/lon into the "
             "working CRS, with no scale factor applied (investigated and "
             "confirmed in v2.58.0 against real GPSeismic databases: that is "
@@ -818,45 +815,62 @@ TR = {
 
     # -- Rediseño v2.66.0 de "Base de Datos" ---------------------------------
     # -- Rediseño v2.67.0 de "Comparar" --------------------------------------
-    "cmp_card_fuente": {"es": "Configuración de la fuente", "en": "Source configuration"},
-    "cmp_card_param": {"es": "Parámetros de comparación y tolerancia", "en": "Comparison parameters and tolerance"},
-    "cmp_rb_preplot": {"es": "Tabla PREPLOT", "en": "PREPLOT table"},
-    "cmp_lbl_ruta_csv": {"es": "Ruta del archivo CSV", "en": "CSV file path"},
-    "cmp_ph_ruta_csv": {"es": "Ningún archivo cargado...", "en": "No file loaded..."},
-    "cmp_btn_cargar": {"es": "📁  Cargar...", "en": "📁  Load..."},
-    "cmp_col_nombre": {"es": "Nombre / Código", "en": "Name / Code"},
-    "cmp_col_x": {"es": "Columna X / Este / Lon", "en": "X / Easting / Lon column"},
-    "cmp_col_y": {"es": "Columna Y / Norte / Lat", "en": "Y / Northing / Lat column"},
-    "cmp_col_z": {"es": "Columna Z / Cota (opcional)", "en": "Z / Elevation column (optional)"},
-    "cmp_lbl_tipo_coord": {"es": "Tipo de coordenadas", "en": "Coordinate type"},
-    "cmp_rb_planas": {"es": "Planas", "en": "Planar"},
-    "cmp_rb_geograficas": {"es": "Geográficas", "en": "Geographic"},
-    "cmp_lbl_crs": {"es": "CRS del CSV (si es plana)", "en": "CSV CRS (if planar)"},
-    "cmp_lbl_contra": {"es": "Comparar contra tabla", "en": "Compare against table"},
-    "cmp_lbl_tolerancia": {"es": "Tolerancia", "en": "Tolerance"},
-    "cmp_btn_comparar": {"es": "📊  Ejecutar comparación", "en": "📊  Run comparison"},
-    "cmp_tb_capa": {"es": "🗺  Crear capa QGIS", "en": "🗺  Create QGIS layer"},
-    "cmp_tb_csv": {"es": "📄  Exportar a CSV", "en": "📄  Export to CSV"},
-    "cmp_tip_capa": {
-        "es": "Crea en QGIS una capa de puntos con el resultado de la comparación (verde: dentro de tolerancia; rojo: fuera).",
-        "en": "Creates a point layer in QGIS with the comparison result (green: within tolerance; red: outside).",
+    "cmp_note_sql": {
+        "es": (
+            "Comparar dos consultas SQL: elige una consulta A (capa 1) y una B (capa 2) -- las mismas "
+            "de la lista de la consola (de ejemplo, guardadas o importadas; \"Personalizada\" usa el "
+            "texto de la consola) -- y pulsa el botón azul. Cada consulta debe ser un SELECT y devolver "
+            "una columna de nombre (Station_Text, Name...) más WGS84_Latitude/WGS84_Longitude o "
+            "Local_Easting/Local_Northing. Se agregan al mapa las dos capas de puntos unidas por líneas "
+            "donde el nombre coincide exactamente; los puntos sin pareja llevan otro ícono. Un cuadro "
+            "informa cuántos puntos hay en cada capa, cuántos coinciden y cuántos no. No escribe nada "
+            "en la base de datos."
+        ),
+        "en": (
+            "Compare two SQL queries: pick a query A (layer 1) and a query B (layer 2) -- the same "
+            "ones as in the console list (example, saved or imported; \"Custom\" uses the console "
+            "text) -- and press the blue button. Each query must be a SELECT and return a name column "
+            "(Station_Text, Name...) plus WGS84_Latitude/WGS84_Longitude or Local_Easting/Local_Northing. "
+            "Both point layers are added to the map, joined by lines where the name matches exactly; "
+            "points without a partner get a different icon. A dialog reports how many points are in "
+            "each layer, how many match and how many do not. Nothing is written to the database."
+        ),
     },
-    "cmp_tip_csv": {
-        "es": "Exporta a un archivo CSV el resultado de la comparación.",
-        "en": "Exports the comparison result to a CSV file.",
+    "cmp_lbl_fila": {"es": "Comparar dos consultas SQL:", "en": "Compare two SQL queries:"},
+    "cmp_tip_query_a": {
+        "es": "Consulta A (capa 1): la misma lista de la consola SQL (de ejemplo, guardadas e importadas).",
+        "en": "Query A (layer 1): same list as the SQL console (example, saved and imported).",
     },
-    "cmp_chk_subir_preplot": {"es": "Guardar también fuentes en PREPLOT", "en": "Also save sources to PREPLOT"},
-    "cmp_btn_guardar": {"es": "💾  GUARDAR COMPARACIÓN", "en": "💾  SAVE COMPARISON"},
-    "cmp_chk_usar_sql": {"es": "Comparar dos consultas SQL (en lugar de la fuente de arriba)", "en": "Compare two SQL queries (instead of the source above)"},
-    "cmp_tip_usar_sql": {"es": "Usa dos consultas de Base de Datos (precargadas, guardadas o importadas) como diseño y levantado. Desactiva la fuente de diseño y la tabla de levantado.", "en": "Use two Database queries (preset, saved or imported) as design and surveyed. Disables the design source and the surveyed table."},
-    "cmp_lbl_query_a": {"es": "Consulta A: diseño (ej. PREPLOT receptoras)", "en": "Query A: design (e.g. PREPLOT receivers)"},
-    "cmp_lbl_query_b": {"es": "Consulta B: levantado (ej. POSTPLOT receptoras)", "en": "Query B: surveyed (e.g. POSTPLOT receivers)"},
-    "cmp_note_sql": {"es": "Las consultas son las de Base de Datos (precargadas, guardadas e importadas). Deben ser SELECT y devolver una columna de nombre (Station_Text, Name...) más WGS84_Latitude/WGS84_Longitude o Local_Easting/Local_Northing.", "en": "Queries are those from Database (preset, saved and imported). They must be SELECT and return a name column (Station_Text, Name...) plus WGS84_Latitude/WGS84_Longitude or Local_Easting/Local_Northing."},
-    "cmp_acc_titulo": {"es": "Comparar dos consultas SQL", "en": "Compare two SQL queries"},
-    "cmp_acc_resumen_on": {"es": "Activo: {a}  vs  {b}", "en": "Active: {a}  vs  {b}"},
-    "cmp_acc_resumen_off": {"es": "Desactivado (usa la fuente de diseño de arriba)", "en": "Off (uses the design source above)"},
-    "cmp_tip_subir_sql": {"es": "No disponible al comparar consultas SQL: los datos ya están en la base de datos.", "en": "Not available when comparing SQL queries: the data is already in the database."},
-    "cmp_origen_sql": {"es": "Consulta SQL: {nombre}", "en": "SQL query: {nombre}"},
+    "cmp_tip_query_b": {
+        "es": "Consulta B (capa 2): la misma lista de la consola SQL (de ejemplo, guardadas e importadas).",
+        "en": "Query B (layer 2): same list as the SQL console (example, saved and imported).",
+    },
+    "cmp_tip_ejecutar": {
+        "es": "Ejecutar la comparación: agrega al mapa las dos capas unidas por líneas donde el nombre coincide y muestra un resumen.",
+        "en": "Run the comparison: adds both layers to the map joined by lines where the name matches, and shows a summary.",
+    },
+    "cmp_res_titulo": {"es": "Comparación de consultas", "en": "Query comparison"},
+    "cmp_res_cuerpo": {
+        "es": (
+            "Capa 1 ({nombre_a}): {n_a} puntos\n"
+            "Capa 2 ({nombre_b}): {n_b} puntos\n\n"
+            "Coinciden por nombre: {n_coinciden}\n"
+            "No coinciden: {n_no}  ({solo_a} sólo en la capa 1, {solo_b} sólo en la capa 2)"
+        ),
+        "en": (
+            "Layer 1 ({nombre_a}): {n_a} points\n"
+            "Layer 2 ({nombre_b}): {n_b} points\n\n"
+            "Matching by name: {n_coinciden}\n"
+            "Not matching: {n_no}  ({solo_a} only in layer 1, {solo_b} only in layer 2)"
+        ),
+    },
+    "cmp_layer_1": {"es": "Comparación capa 1: {nombre}", "en": "Comparison layer 1: {nombre}"},
+    "cmp_layer_2": {"es": "Comparación capa 2: {nombre}", "en": "Comparison layer 2: {nombre}"},
+    "cmp_layer_enlaces": {"es": "Comparación: enlaces por nombre", "en": "Comparison: links by name"},
+    "cmp_leg_coincide_1": {"es": "Coincide con la capa 2", "en": "Matches layer 2"},
+    "cmp_leg_no_1": {"es": "Sin pareja en la capa 2", "en": "No partner in layer 2"},
+    "cmp_leg_coincide_2": {"es": "Coincide con la capa 1", "en": "Matches layer 1"},
+    "cmp_leg_no_2": {"es": "Sin pareja en la capa 1", "en": "No partner in layer 1"},
     "cmp_err_sql_titulo": {"es": "Consulta {letra} ({nombre})", "en": "Query {letra} ({nombre})"},
     "cmp_err_sql_ejecutar": {"es": "No se pudo ejecutar la consulta: {error}", "en": "Could not run the query: {error}"},
     "cmp_err_sql_sin_nombre": {"es": "La consulta no devuelve una columna de nombre (Station_Text, Name, Point...).", "en": "The query does not return a name column (Station_Text, Name, Point...)."},
@@ -866,6 +880,20 @@ TR = {
     "bd_card_buscar": {"es": "Edición rápida: Buscar y reemplazar", "en": "Quick edit: Find and replace"},
     "bd_card_mapeo": {"es": "Mapeo de columnas", "en": "Column mapping"},
     "bd_card_salida": {"es": "Formato de salida", "en": "Output format"},
+    "bd_acc_exportar": {"es": "Exportar consulta a", "en": "Export query to"},
+    "tip_btn_agregar_condicion_consulta": {
+        "es": "Arma una condición con la columna/condición/valor elegidos y la agrega al filtro (WHERE) de la consulta, uniéndola con Y/O si ya había una. Después pulsa Ejecutar.",
+        "en": "Builds a condition from the chosen column/condition/value and adds it to the query's filter (WHERE), joined with AND/OR if one already existed. Then press Run.",
+    },
+    "tip_btn_sql_dev_consulta": {
+        "es": "Muestra u oculta el cuadro con la consulta SQL completa -- para escribirla o ajustarla a mano.",
+        "en": "Shows or hides the box with the full SQL query -- to write or tweak it by hand.",
+    },
+    "bd_cond_sql_compleja": {"es": "(consulta personalizada: ver Modo Desarrollador)", "en": "(custom query: see Developer mode)"},
+    "err_bd_wiz_sql_compleja": {
+        "es": "La consulta actual es más compleja que un SELECT simple de una tabla (tiene JOIN, UNION, GROUP BY o WITH), así que el asistente no puede agregarle la condición. Ábrela en Modo Desarrollador (SQL) y edítala a mano, o elige otra consulta.",
+        "en": "The current query is more complex than a simple single-table SELECT (it has JOIN, UNION, GROUP BY or WITH), so the assistant cannot add the condition. Open it in Developer mode (SQL) and edit it by hand, or pick another query.",
+    },
     "bd_tb_run": {"es": "▶  Ejecutar", "en": "▶  Run"},
     "bd_tb_save": {"es": "💾  Guardar", "en": "💾  Save"},
     "bd_tb_delete": {"es": "🗑  Borrar", "en": "🗑  Delete"},
@@ -2244,7 +2272,6 @@ TR = {
 
     # -- Sección: Comparar ---------------------------------------------------
     "grp_source": {"es": "1. Fuente de los puntos de diseño", "en": "1. Design points source"},
-    "rb_source_csv": {"es": "Archivo CSV", "en": "CSV file"},
     "rb_source_preplot": {
         "es": "Tabla PREPLOT de la base de datos del proyecto",
         "en": "Project database's PREPLOT table",
@@ -2265,38 +2292,6 @@ TR = {
         "es": "CRS del CSV (si es de coordenadas planas):",
         "en": "CSV's CRS (if using planar coordinates):",
     },
-    "comparar_intro": {
-        "es": (
-            "Compara los puntos levantados (POSTPLOT u otra tabla) contra puntos "
-            "de diseño, emparejando por nombre/código de punto: la fuente de "
-            "diseño puede ser un CSV que cargues aquí o directamente la tabla "
-            "PREPLOT ya guardada en la base del proyecto. El resultado muestra "
-            "los desplazamientos (ΔEste, ΔNorte, distancia) y marca qué puntos "
-            "quedan dentro o fuera de la tolerancia elegida, y se puede subir a "
-            "la tabla COMPARACION de la base de datos."
-        ),
-        "en": (
-            "Compares surveyed points (POSTPLOT or another table) against "
-            "design points, matching by point name/code: the design source can "
-            "be a CSV you load here or directly the PREPLOT table already saved "
-            "in the project database. The result shows the offsets (ΔEast, "
-            "ΔNorth, distance) and flags which points fall within or outside "
-            "the chosen tolerance, and can be uploaded to the database's "
-            "COMPARACION table."
-        ),
-    },
-    "info_preplot_source_note": {
-        "es": (
-            "Se usarán directamente los puntos de la tabla PREPLOT ya guardada en "
-            "esta base de datos (Station_Text / WGS84_Latitude / WGS84_Longitude / "
-            "WGS84_Height); no hace falta cargar un CSV."
-        ),
-        "en": (
-            "Points already saved in this database's PREPLOT table will be used "
-            "directly (Station_Text / WGS84_Latitude / WGS84_Longitude / "
-            "WGS84_Height); no need to load a CSV."
-        ),
-    },
     "grp_compare": {"es": "2. Comparación", "en": "2. Comparison"},
     "lbl_compare_against": {"es": "Comparar contra tabla:", "en": "Compare against table:"},
     "lbl_tolerance": {"es": "Tolerancia (m):", "en": "Tolerance (m):"},
@@ -2316,13 +2311,9 @@ TR = {
         ),
     },
     "btn_compare": {"es": "Comparar", "en": "Compare"},
-    "col_name_design": {"es": "Nombre (diseño)", "en": "Name (design)"},
-    "col_name_surveyed": {"es": "Nombre (levantado)", "en": "Name (surveyed)"},
-    "col_match_type": {"es": "Tipo match", "en": "Match type"},
     "col_delta_x": {"es": "ΔEste (m)", "en": "ΔEasting (m)"},
     "col_delta_y": {"es": "ΔNorte (m)", "en": "ΔNorthing (m)"},
     "col_dist_2d": {"es": "Dist. 2D (m)", "en": "2D Dist. (m)"},
-    "col_within_tol": {"es": "¿Tolerancia?", "en": "Within tolerance?"},
     "btn_create_compare_layer": {
         "es": "Crear capa de comparación en QGIS",
         "en": "Create comparison layer in QGIS",
@@ -2333,88 +2324,8 @@ TR = {
         "es": "Subir también los puntos del CSV a la tabla PREPLOT",
         "en": "Also upload the CSV points to the PREPLOT table",
     },
-    "tip_upload_preplot_disabled": {
-        "es": "No aplica: la fuente de diseño ya es la tabla PREPLOT.",
-        "en": "Not applicable: the design source is already the PREPLOT table.",
-    },
     "btn_upload_db": {"es": "Guardar comparación en la base de datos", "en": "Save comparison to the database"},
-    "dlg_load_csv_title": {"es": "Cargar CSV de diseño", "en": "Load design CSV"},
-    "filter_csv": {"es": "CSV (*.csv);;Todos (*.*)", "en": "CSV (*.csv);;All files (*.*)"},
-    "err_csv_read": {"es": "No se pudo leer el CSV:\n{error}", "en": "Could not read the CSV:\n{error}"},
-    "warn_csv_empty_title": {"es": "CSV vacío", "en": "Empty CSV"},
-    "warn_csv_empty_body": {
-        "es": "El archivo no tiene columnas reconocibles.",
-        "en": "The file has no recognizable columns.",
-    },
-    "info_missing_csv_title": {"es": "Falta CSV", "en": "Missing CSV"},
-    "info_missing_csv_body": {
-        "es": "Primero carga un archivo CSV de diseño.",
-        "en": "First load a design CSV file.",
-    },
-    "err_csv_columns": {
-        "es": "No se pudo leer el CSV con esas columnas:\n{error}",
-        "en": "Could not read the CSV with those columns:\n{error}",
-    },
-    "warn_csv_no_data_title": {"es": "Sin datos", "en": "No data"},
-    "warn_csv_no_data_body": {
-        "es": "No se encontraron filas válidas en el CSV con esas columnas.",
-        "en": "No valid rows were found in the CSV with those columns.",
-    },
-    "warn_no_points_title": {"es": "Sin puntos", "en": "No points"},
-    "warn_no_points_body": {
-        "es": "La tabla {tabla} no tiene puntos con coordenadas.",
-        "en": "The {tabla} table has no points with coordinates.",
-    },
-    "warn_same_table_title": {"es": "Tablas iguales", "en": "Same table"},
-    "warn_same_table_body": {
-        "es": (
-            "La fuente de diseño ya es PREPLOT: elige POSTPLOT como tabla de "
-            "levantado para comparar contra algo distinto."
-        ),
-        "en": (
-            "The design source is already PREPLOT: choose POSTPLOT as the "
-            "surveyed table to compare against something different."
-        ),
-    },
-    "lbl_compare_summary": {
-        "es": (
-            "Emparejados: {matched}  |  Dentro de tolerancia ({tol} m): {within}  |  "
-            "Sólo en diseño: {only_design}  |  Sólo en {tabla}: {only_surveyed}"
-        ),
-        "en": (
-            "Matched: {matched}  |  Within tolerance ({tol} m): {within}  |  "
-            "Design only: {only_design}  |  {tabla} only: {only_surveyed}"
-        ),
-    },
-    "info_no_results_title": {"es": "Sin resultados", "en": "No results"},
-    "info_no_results_body": {
-        "es": "Primero ejecuta una comparación con resultados.",
-        "en": "First run a comparison with results.",
-    },
-    "info_no_results_body_generic": {
-        "es": "Primero ejecuta una comparación.",
-        "en": "First run a comparison.",
-    },
-    "dlg_export_compare_title": {"es": "Exportar comparación", "en": "Export comparison"},
     "msg_export_ok_title": {"es": "Exportado", "en": "Exported"},
-    "msg_export_compare_body": {
-        "es": "Comparación exportada a:\n{path}",
-        "en": "Comparison exported to:\n{path}",
-    },
-    "err_export_generic": {"es": "No se pudo exportar:\n{error}", "en": "Could not export:\n{error}"},
-    "origen_diseno_preplot": {"es": "PREPLOT (base de datos)", "en": "PREPLOT (database)"},
-    "msg_upload_body": {
-        "es": "{n_comp} filas guardadas en COMPARACION{extra}.",
-        "en": "{n_comp} rows saved to COMPARISON{extra}.",
-    },
-    "msg_upload_extra_preplot": {
-        "es": " y {n_pre} puntos subidos a PREPLOT",
-        "en": " and {n_pre} points uploaded to PREPLOT",
-    },
-    "err_upload_db": {
-        "es": "No se pudo guardar en la base de datos:\n{error}\n\n{trace}",
-        "en": "Could not save to the database:\n{error}\n\n{trace}",
-    },
 
     # -- Sección: Base de Datos ----------------------------------------------
     "bd_intro": {
@@ -2422,13 +2333,17 @@ TR = {
             "Arma una consulta (sólo SELECT) sobre la base del proyecto y exporta "
             "el resultado. Útil para filtrar qué puntos van a cada archivo "
             "(por ejemplo, sólo los receptores de una línea, o los puntos fuera "
-            "de tolerancia de la comparación)."
+            "de tolerancia de la comparación). Los filtros se arman con el asistente "
+            "(columna, condición y valor); el SQL queda en \"Modo Desarrollador\". Junto a Buscar y "
+            "reemplazar, la fila \"Comparar dos consultas SQL\" compara dos consultas entre sí."
         ),
         "en": (
             "Build a query (SELECT only) against the project database and export "
             "the result. Useful for filtering which points go into each file "
             "(e.g. only the receivers of one line, or the points outside the "
-            "comparison's tolerance)."
+            "comparison's tolerance). Filters are built with the assistant "
+            "(column, condition and value); the SQL stays under \"Developer mode\". Next to Find and "
+            "replace, the \"Compare two SQL queries\" row compares two queries against each other."
         ),
     },
     "lbl_query_preset": {"es": "Consulta de ejemplo:", "en": "Example query:"},

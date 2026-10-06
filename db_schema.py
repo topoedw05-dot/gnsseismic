@@ -484,6 +484,103 @@ def deletable_table_and_where(sql: str) -> Tuple[Optional[str], Optional[str]]:
     return tabla, (where_sql.strip() if where_sql else None)
 
 
+# --- Asistente de filtro de la Consola SQL (v2.72.0) ------------------------
+#
+# El usuario arma condiciones con un asistente visual (columna + condición
+# + valor) sin escribir SQL; la condición se agrega al WHERE de la consulta
+# que está en la consola. Estas funciones son puras (sin Qt) para poder
+# probarlas por separado.
+
+_SIMPLE_SELECT_RE = re.compile(
+    r"^(?P<head>select\b.*?\bfrom\s+(?P<tabla>[a-zA-Z_][a-zA-Z0-9_]*))\s*"
+    r"(?:where\s+(?P<where>.*?))?\s*"
+    r"(?P<tail>(?:order\s+by\b.*?)?(?:limit\b.*?)?)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def split_simple_select(sql: str) -> Optional[Tuple[str, str, Optional[str], str]]:
+    """Si `sql` es un SELECT simple sobre UNA tabla (sin JOIN/UNION/GROUP
+    BY ni CTE), devuelve (head, tabla, where_o_None, tail) donde `head` es
+    "SELECT ... FROM tabla" y `tail` es el "ORDER BY ... LIMIT ..." final
+    (o ""). Si no se puede descomponer con seguridad, devuelve None."""
+    if not is_select_only(sql):
+        return None
+    sin_comentarios = re.sub(r"--[^\n]*", "", sql or "")
+    cuerpo = sin_comentarios.strip().rstrip(";").strip()
+    if not cuerpo or re.match(r"^with\b", cuerpo, re.IGNORECASE):
+        return None
+    if _DELETE_JOIN_UNION_RE.search(cuerpo) or _DELETE_GROUP_BY_RE.search(cuerpo):
+        return None
+    m = _SIMPLE_SELECT_RE.match(cuerpo)
+    if not m:
+        return None
+    where = m.group("where")
+    return m.group("head"), m.group("tabla"), (where.strip() if where and where.strip() else None), (m.group("tail") or "").strip()
+
+
+def add_where_condition(sql: str, condicion: str, conector: str = "AND") -> Optional[str]:
+    """Agrega `condicion` al WHERE de `sql` (unida con `conector`, AND u
+    OR, si ya había una), conservando ORDER BY/LIMIT. Devuelve None si la
+    consulta no es un SELECT simple de una sola tabla."""
+    partes = split_simple_select(sql)
+    if partes is None:
+        return None
+    head, _tabla, where, tail = partes
+    conector = "OR" if str(conector).upper() == "OR" else "AND"
+    nuevo_where = condicion if not where else f"({where}) {conector} ({condicion})"
+    resultado = f"{head} WHERE {nuevo_where}"
+    if tail:
+        resultado += f" {tail}"
+    return resultado
+
+
+def table_column_types(conn: sqlite3.Connection, table: str) -> Dict[str, str]:
+    """{columna: tipo declarado en mayúsculas} de `table` (PRAGMA table_info)."""
+    cur = conn.execute(f"PRAGMA table_info([{table}])")
+    return {row[1]: (row[2] or "").upper() for row in cur.fetchall()}
+
+
+def is_numeric_sql_type(tipo: str) -> bool:
+    """True si el tipo declarado en SQLite es numérico (INT, DOUBLE, FLOAT, ...)."""
+    t = (tipo or "").upper()
+    return any(x in t for x in ("INT", "DOUBLE", "FLOAT", "REAL", "NUM", "DEC"))
+
+
+def build_filter_condition(col: str, tipo: str, op_key: str, valor: str) -> Optional[str]:
+    """Fragmento SQL para `col` (ya listo para usar en SQL, p. ej. entre
+    corchetes) según el operador del asistente: "=", "!=", ">", "<", ">=",
+    "<=", "contiene", "no_contiene", "vacio", "no_vacio". `tipo` es "text"
+    o "num" (sólo texto lleva comillas). Devuelve None si falta un valor
+    donde hace falta uno o si el valor no es numérico en una columna
+    numérica."""
+    valor = (valor or "").strip()
+    if op_key == "vacio":
+        if tipo == "text":
+            return f"({col} IS NULL OR {col} = '')"
+        return f"{col} IS NULL"
+    if op_key == "no_vacio":
+        if tipo == "text":
+            return f"({col} IS NOT NULL AND {col} != '')"
+        return f"{col} IS NOT NULL"
+    if not valor:
+        return None
+    if op_key in ("contiene", "no_contiene"):
+        valor_escapado = valor.replace("'", "''")
+        condicion_like = f"{col} LIKE '%{valor_escapado}%'"
+        return condicion_like if op_key == "contiene" else f"NOT {condicion_like}"
+    if op_key not in ("=", "!=", ">", "<", ">=", "<="):
+        return None
+    if tipo == "num":
+        try:
+            float(valor)
+        except ValueError:
+            return None
+        return f"{col} {op_key} {valor}"
+    valor_escapado = valor.replace("'", "''")
+    return f"{col} {op_key} '{valor_escapado}'"
+
+
 def count_matching_rows(conn: sqlite3.Connection, table: str, where_sql: Optional[str]) -> int:
     if table not in DELETABLE_TABLES:
         raise ValueError(f"No se permite borrar de la tabla {table} desde este panel.")

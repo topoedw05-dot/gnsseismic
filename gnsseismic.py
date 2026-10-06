@@ -4,7 +4,7 @@ gnsseismic.py
 -------------
 Clase principal del plugin. Registra un ÚNICO toolbar de QGIS
 ("GNSSeismic") con un ícono por sección -- Proyecto / Preplot Sísmico /
-Importar datos de campo / Comparar / Base de Datos -- más un selector de idioma
+Importar datos de campo / Base de Datos -- más un selector de idioma
 embebido en el mismo toolbar. Cada ícono abre esa sección como una
 ventana independiente y no modal (`GNSSeismicController.show_window`),
 para que el usuario pueda tener varias abiertas al mismo tiempo en vez de
@@ -34,7 +34,6 @@ _SECTIONS = [
     ("proyecto", "tab1_title", ["/mActionFileNew.svg", "/mIconGeoPackage.svg", "/mActionNewVectorLayer.svg"]),
     ("preplot", "tab2_title", ["/mIconPointLayer.svg", "/mActionAddRegularLayer.svg", "/mIconPointCloudLayer.svg"]),
     ("importar", "tab3_title", ["/mActionAddGpxLayer.svg", "/mActionSharingImport.svg", "/mActionFileOpen.svg"]),
-    ("comparar", "tab4_title", ["/mActionMeasure.svg", "/mIconTableRelation.svg", "/mActionSelectRectangle.svg"]),
     ("bd", "tab5_title", ["/mIconDbSchema.svg", "/mActionOpenTable.svg", "/mIconSqliteLayer.svg"]),
 ]
 

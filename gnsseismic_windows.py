@@ -2,7 +2,7 @@
 """
 gnsseismic_windows.py
 ----------------------
-Controlador principal del plugin (`GNSSeismicController`) y sus cinco
+Controlador principal del plugin (`GNSSeismicController`) y sus cuatro
 ventanas de sección (bilingüe ES/EN; el idioma se controla desde un
 combo en el toolbar del plugin, ver `gnsseismic.py`). Cada sección era
 una pestaña de un único diálogo hasta la v1.3.0 ("Gestor DC Topografía");
@@ -25,11 +25,6 @@ mismo tiempo:
                      coordenadas geográficas B/L/H), aplicarles
                      (opcionalmente) el geoide del proyecto, importarlos
                      a POSTPLOT y visualizarlos como capa de puntos.
-  Comparar        -> comparar los puntos levantados contra puntos de
-                     diseño, cuya fuente puede ser un CSV cargado por
-                     el usuario O la tabla PREPLOT ya guardada en esta
-                     misma base de datos; ver diferencias, crear capa
-                     de comparación y subir el resultado a la BD.
   Base de Datos   -> ejecutar consultas SELECT sobre la base del
                      proyecto y exportar el resultado a Shapefile,
                      GeoPackage o SPS (SEG/Shell, .S01/.R01).
@@ -321,12 +316,6 @@ COLOR_KI = "#1f78b4"
 COLOR_SO = "#e31a1c"
 COLOR_DENTRO = QColor(200, 255, 200)
 COLOR_FUERA = QColor(255, 200, 200)
-# Tabla de "Comparar": tintes más suaves + texto oscuro fijo (legibles en tema oscuro).
-COLOR_CMP_DENTRO = QColor(214, 240, 214)
-COLOR_CMP_FUERA = QColor(250, 214, 214)
-COLOR_CMP_TEXTO = QColor(33, 33, 33)
-COMPARAR_COL_DIST = 5  # "Dist. 2D"
-COMPARAR_COL_TOL = 6   # "¿Tolerancia?"
 # Fondo de la celda "Nombre" de un punto marcado `ambiguous_reoccupation`
 # (reocupación ambigua, prefijo "?" -- ver `DCPoint.ambiguous_reoccupation`)
 # o todavía `deleted` en su estado final (prefijo "D") -- pedido del
@@ -1295,7 +1284,7 @@ CORR_BASE_SHIFT_WARN_M = 50.0
 
 class _SectionWindow(QDialog):
     """Ventana no modal para una sección del plugin (Proyecto, Preplot
-    Sísmico, Importar datos de campo, Comparar o Base de Datos). Se puede mover,
+    Sísmico, Importar datos de campo o Base de Datos). Se puede mover,
     redimensionar y cerrar de forma independiente, y quedar abierta junto
     con las demás ventanas del plugin al mismo tiempo -- a diferencia de
     una pestaña, aquí no hay que elegir cuál ver."""
@@ -1305,7 +1294,7 @@ class _SectionWindow(QDialog):
         self.setModal(False)
         # Por defecto un QDialog en Windows sólo trae el botón de cerrar
         # en la barra de título -- pedido del usuario (v2.20.0): agregar
-        # también minimizar y maximizar/restaurar a las cinco ventanas de
+        # también minimizar y maximizar/restaurar a las cuatro ventanas de
         # sección (comparten esta misma clase, así que alcanza con
         # tocarla acá una sola vez). `WindowSystemMenuHint` va junto con
         # los otros dos porque en algunas plataformas hace falta para que
@@ -1341,7 +1330,7 @@ class _SectionWindow(QDialog):
 
 class GNSSeismicController(QWidget):
     """No es una ventana visible: existe sólo para guardar el estado
-    compartido entre las cinco secciones del plugin y para servir de
+    compartido entre las cuatro secciones del plugin y para servir de
     padre estable a los QFileDialog/QMessageBox de cada una. Las
     ventanas propiamente dichas son las `_SectionWindow` que arma
     `_build_windows()`, una por sección."""
@@ -1572,9 +1561,7 @@ class GNSSeismicController(QWidget):
         # `_actualizar_boton_subir`). Se vacía al cambiar de proyecto: los
         # ID sólo valen para la base de datos donde se insertaron.
         self._lotes_subidos = []
-        self.design_points = []  # list[dict] con las coordenadas ya transformadas del "diseño" (CSV o PREPLOT)
-        self._origen_diseno_label = ""  # texto para la columna Origen_Diseno al subir COMPARACION
-        self.match_result = None
+        self._cmp_layers = []  # capas temporales de la última comparación de consultas (ver `comparar_consultas`)
         self.preplot_generated_points = []  # list[PreplotPoint], último preplot generado
         self._preplot_track_azimuths = {}  # {track normalizado: azimut grados}, ver `_calcular_preplot_track_azimuths`
 
@@ -1739,20 +1726,19 @@ class GNSSeismicController(QWidget):
         self._fill_descriptor_combo(self.cb_grilla_descriptor)
         self._fill_descriptor_combo(self.cb_linea_descriptor)
         self._fill_query_preset_combo(keep_selection=True)
-        if hasattr(self, "cb_cmp_query_a"):
-            self._fill_cmp_query_combos(keep_selection=True)
-            self._actualizar_resumen_cmp_sql()
+        self._fill_cmp_query_combos(keep_selection=True)
         self._fill_export_format_combo(keep_selection=True)
         self._actualizar_visibilidad_opciones_sps()
+        self._actualizar_resumen_bd_acordeones()
+        self._fill_bd_wiz_operadores(keep_selection=True)
+        self._actualizar_texto_boton_sql_dev_bd()
+        self._actualizar_cond_actual_bd()
         self._render_query_resumen()
         self._fill_export_preview_format_combo(keep_selection=True)
         self._fill_bulk_campo_combo(keep_selection=True)
         self._fill_preview_filter_preset_combo(keep_selection=True)
         self._fill_filtro_wizard_combos(keep_selection=True)
 
-        self.tbl_resultado.setHorizontalHeaderLabels(self._comparar_headers())
-        if self.match_result is not None:
-            self._llenar_tabla_resultado(self.match_result)
 
         self._retranslate_tabla_preview()
 
@@ -1794,7 +1780,6 @@ class GNSSeismicController(QWidget):
 
         self._render_counts_label()
         self._render_preplot_label()
-        self._toggle_fuente_diseno()
         self._actualizar_chk_geoid_importar()
 
     def _retranslate_window_titles(self):
@@ -1809,7 +1794,6 @@ class GNSSeismicController(QWidget):
             ("proyecto", self._build_tab_proyecto, "tab1_title"),
             ("preplot", self._build_tab_preplot, "tab2_title"),
             ("importar", self._build_tab_importar, "tab3_title"),
-            ("comparar", self._build_tab_comparar, "tab4_title"),
             ("bd", self._build_tab_bd, "tab5_title"),
         ]
         parent_window = self.iface.mainWindow() if self.iface is not None else None
@@ -1825,7 +1809,7 @@ class GNSSeismicController(QWidget):
     def _ajustar_tamano_ventana(self, win, content):
         """Dimensiona la ventana de una sección a lo que su propio
         contenido necesita, en vez de un tamaño fijo grande igual para
-        las cinco -- antes todas abrían a 950x720 sin importar cuánto
+        las ventanas -- antes todas abrían a 950x720 sin importar cuánto
         contenido tuvieran, lo que en pantallas más chicas tapaba casi
         toda la pantalla.
 
@@ -1833,7 +1817,7 @@ class GNSSeismicController(QWidget):
         meterlo en el QScrollArea de `_SectionWindow`) en vez de
         `win.adjustSize()`: el sizeHint de un QScrollArea vacío de
         contexto es un tamaño genérico chico que no refleja el
-        contenido real, así que dimensionar por ahí dejaba las cinco
+        contenido real, así que dimensionar por ahí dejaba a todas las
         ventanas con la misma altura chica sin importar cuánto
         contenido tuvieran (el problema opuesto al de antes). Con el
         sizeHint del contenido, cada ventana vuelve a abrir según lo que
@@ -1881,7 +1865,7 @@ class GNSSeismicController(QWidget):
 
     def show_window(self, key):
         """Abre (o trae al frente, si ya estaba abierta) la ventana de la
-        sección `key` ("proyecto"/"preplot"/"importar"/"comparar"/"bd").
+        sección `key` ("proyecto"/"preplot"/"importar"/"bd").
         Llamado desde el ícono correspondiente del toolbar."""
         entry = self._windows.get(key)
         if entry is None:
@@ -1892,7 +1876,7 @@ class GNSSeismicController(QWidget):
         win.activateWindow()
 
     def close_all_windows(self):
-        """Cierra las cinco ventanas de sección (llamado al descargar el
+        """Cierra las cuatro ventanas de sección (llamado al descargar el
         plugin, `GNSSeismicPlugin.unload()`)."""
         # Un proyecto compartido abierto publica lo pendiente y libera su
         # bloqueo al descargar/recargar el plugin.
@@ -2267,8 +2251,8 @@ class GNSSeismicController(QWidget):
     def _zoom_canvas_a_capa(self, layer):
         """Centra el canvas de QGIS en la extensión de `layer` (usado por
         todas las capas provisionales/de resultado que crea el plugin --
-        Preplot Sísmico, Importar datos de campo, Comparar, Base de
-        Datos). `QgsMapCanvas.setExtent()` interpreta el `QgsRectangle`
+        Preplot Sísmico, Importar datos de campo, Base de Datos,
+        comparación de consultas). `QgsMapCanvas.setExtent()` interpreta el `QgsRectangle`
         que recibe en el CRS ACTUAL del canvas, no en el de la capa --
         pasarle `layer.extent()` sin transformar (como se hacía antes de
         la v2.18.0) deja el canvas centrándose en coordenadas sin
@@ -3547,6 +3531,7 @@ class GNSSeismicController(QWidget):
         # crea un proyecto, ese combo queda vacío (no hay esquema todavía
         # que leer).
         self._poblar_columnas_buscar_reemplazar()
+        self._poblar_columnas_wizard_bd(forzar=True)
 
     def _require_project(self) -> bool:
         if self.conn is None:
@@ -4418,7 +4403,7 @@ class GNSSeismicController(QWidget):
         """Al elegir (o refrescar) la capa de arriba, vuelve a llenar
         los combos de campos (Nombre/Track/Bin/Cota/Descriptor) con los
         campos de esa capa, preseleccionando por nombre igual que en
-        "Comparar"."""
+        el resto del plugin."""
         layer = self._capa_preplot_ext_seleccionada()
         nombres = [f.name() for f in layer.fields()] if layer is not None else []
 
@@ -7013,7 +6998,7 @@ class GNSSeismicController(QWidget):
     def _ejecutar_comparacion_preview(self):
         """Empareja `self._import_preview` (puntos del .dc aún no
         subidos) contra la tabla PREPLOT del proyecto -- a diferencia de
-        la sección "Comparar" (que compara contra POSTPLOT ya subido),
+        el desplegable de comparación de consultas de "Base de Datos",
         aquí se compara en memoria, antes de escribir nada en la base de
         datos, para decidir qué subir.
 
@@ -7685,37 +7670,7 @@ class GNSSeismicController(QWidget):
         tipo = columnas_por_clave.get(col_key, "text")
         valor = self.txt_filtro_wizard_valor.text().strip()
 
-        if op_key == "vacio":
-            if tipo == "text":
-                return f"({col_key} IS NULL OR {col_key} = '')"
-            return f"{col_key} IS NULL"
-        if op_key == "no_vacio":
-            if tipo == "text":
-                return f"({col_key} IS NOT NULL AND {col_key} != '')"
-            return f"{col_key} IS NOT NULL"
-
-        if not valor:
-            return None
-
-        if op_key in ("contiene", "no_contiene"):
-            valor_escapado = valor.replace("'", "''")
-            condicion_like = f"{col_key} LIKE '%{valor_escapado}%'"
-            return condicion_like if op_key == "contiene" else f"NOT {condicion_like}"
-
-        simbolos = {"=": "=", "!=": "!=", ">": ">", "<": "<", ">=": ">=", "<=": "<="}
-        simbolo = simbolos.get(op_key)
-        if simbolo is None:
-            return None
-
-        if tipo == "num":
-            try:
-                float(valor)
-            except ValueError:
-                return None
-            return f"{col_key} {simbolo} {valor}"
-
-        valor_escapado = valor.replace("'", "''")
-        return f"{col_key} {simbolo} '{valor_escapado}'"
+        return db_schema.build_filter_condition(col_key, tipo, op_key, valor)
 
     def _agregar_condicion_filtro_preview(self):
         condicion_nueva = self._construir_condicion_wizard()
@@ -8857,231 +8812,18 @@ class GNSSeismicController(QWidget):
         self._zoom_canvas_a_capa(layer)
         self._provisional_preplot_ext_layer = layer
 
-    # -- Sección: Comparar --------------------------------------------------
-    # -- Sección: Comparar (rediseño v2.67.0) -------------------------------
-    # Arriba, dos tarjetas 50/50: "Configuración de la fuente" (CSV o tabla
-    # PREPLOT; el formulario de mapeo del CSV sólo se ve con "Archivo CSV") y
-    # "Parámetros de comparación" (tabla, tolerancia, emparejamiento
-    # aproximado y el botón "Ejecutar comparación" al fondo). En el medio, la
-    # tabla de discrepancias con todo el alto sobrante; abajo, una única
-    # barra con las salidas (capa QGIS / CSV a la izquierda; interruptor
-    # "Guardar también fuentes en PREPLOT" y botón verde a la derecha).
-    def _build_tab_comparar(self):
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setSpacing(6)
-        self._agregar_boton_ayuda(v, ["comparar_intro"], "tab4_title")
-
-        # ---- Tarjeta izquierda: Configuración de la fuente ----
-        grp_fuente, v_f = self._tarjeta_card("cmp_card_fuente")
-        self.grp_cmp_fuente = grp_fuente
-        fila_modo = QHBoxLayout()
-        self.rb_fuente_csv = self._reg(QRadioButton(), "rb_source_csv")
-        self.rb_fuente_preplot = self._reg(QRadioButton(), "cmp_rb_preplot")
-        self.rb_fuente_csv.setChecked(True)
-        grupo_fuente = QButtonGroup(self)
-        grupo_fuente.addButton(self.rb_fuente_csv)
-        grupo_fuente.addButton(self.rb_fuente_preplot)
-        fila_modo.addWidget(self.rb_fuente_csv)
-        fila_modo.addWidget(self.rb_fuente_preplot)
-        fila_modo.addStretch(1)
-        v_f.addLayout(fila_modo)
-
-        # Formulario del CSV: se oculta entero con "Tabla PREPLOT"
-        # (`_toggle_fuente_diseno`). Se conserva el nombre `grp_csv`.
-        self.grp_csv = QWidget()
-        v_csv = QVBoxLayout(self.grp_csv)
-        v_csv.setContentsMargins(0, 0, 0, 0)
-        v_csv.setSpacing(6)
-
-        lbl_ruta = self._reg(QLabel(), "cmp_lbl_ruta_csv")
-        lbl_ruta.setStyleSheet(ESTILO_ROTULO_TENUE)
-        v_csv.addWidget(lbl_ruta)
-        fila_csv = QHBoxLayout()
-        self.lbl_csv_path = QLineEdit()
-        self.lbl_csv_path.setReadOnly(True)
-        self._reg(self.lbl_csv_path, "cmp_ph_ruta_csv", kind="placeholder")
-        btn_csv = self._reg(QPushButton(), "cmp_btn_cargar")
-        btn_csv.clicked.connect(self.cargar_csv)
-        fila_csv.addWidget(self.lbl_csv_path, 1)
-        fila_csv.addWidget(btn_csv)
-        v_csv.addLayout(fila_csv)
-
-        self.cb_col_nombre = self._combo_campo()
-        self.cb_col_x = self._combo_campo()
-        self.cb_col_y = self._combo_campo()
-        self.cb_col_z = self._combo_campo()
-        cont_cols, g = self._bloque_filas(2)
-        self._celda_campo(g, 0, 0, "cmp_col_nombre", self.cb_col_nombre)
-        self._celda_campo(g, 0, 1, "cmp_col_z", self.cb_col_z)
-        self._celda_campo(g, 1, 0, "cmp_col_x", self.cb_col_x)
-        self._celda_campo(g, 1, 1, "cmp_col_y", self.cb_col_y)
-
-        # Fila 4: tipo de coordenadas | CRS.
-        cont_tipo = QWidget()
-        v_tipo = QVBoxLayout(cont_tipo)
-        v_tipo.setContentsMargins(0, 0, 0, 0)
-        v_tipo.setSpacing(2)
-        lbl_tipo = self._reg(QLabel(), "cmp_lbl_tipo_coord")
-        lbl_tipo.setStyleSheet(ESTILO_ROTULO_TENUE)
-        v_tipo.addWidget(lbl_tipo)
-        h_tipo = QHBoxLayout()
-        self.rb_plana = self._reg(QRadioButton(), "cmp_rb_planas")
-        self.rb_geografica = self._reg(QRadioButton(), "cmp_rb_geograficas")
-        self.rb_plana.setChecked(True)
-        grupo_tipo = QButtonGroup(self)
-        grupo_tipo.addButton(self.rb_plana)
-        grupo_tipo.addButton(self.rb_geografica)
-        h_tipo.addWidget(self.rb_plana)
-        h_tipo.addWidget(self.rb_geografica)
-        h_tipo.addStretch(1)
-        v_tipo.addLayout(h_tipo)
-        g.addWidget(cont_tipo, 2, 0)
-
-        if QgsProjectionSelectionWidget is not None:
-            self.csv_crs_widget = QgsProjectionSelectionWidget()
-            self.csv_crs_widget.setCrs(QgsCoordinateReferenceSystem("EPSG:9377"))
-            self.cont_csv_crs = self._celda_campo(g, 2, 1, "cmp_lbl_crs", self.csv_crs_widget)
-        else:
-            self.csv_crs_widget = None
-            self.cont_csv_crs = None
-        v_csv.addWidget(cont_cols)
-        v_f.addWidget(self.grp_csv)
-
-        self.lbl_preplot_source_note = self._reg(QLabel(), "info_preplot_source_note")
-        self.lbl_preplot_source_note.setWordWrap(True)
-        self.lbl_preplot_source_note.setVisible(False)
-        v_f.addWidget(self.lbl_preplot_source_note)
-        v_f.addStretch(1)
-
-        self.rb_fuente_csv.toggled.connect(self._toggle_fuente_diseno)
-        self.rb_fuente_preplot.toggled.connect(self._toggle_fuente_diseno)
-        # El CRS del CSV sólo aplica a coordenadas planas.
-        self.rb_plana.toggled.connect(self._actualizar_crs_csv_habilitado)
-
-        # ---- Tarjeta derecha: Parámetros de comparación y tolerancia ----
-        grp_comp, v_c = self._tarjeta_card("cmp_card_param")
-        self.cb_tabla_levantado = QComboBox()
-        self.cb_tabla_levantado.addItems(["POSTPLOT", "PREPLOT"])
-        self.spn_tolerancia = QDoubleSpinBox()
-        self.spn_tolerancia.setDecimals(3)
-        self.spn_tolerancia.setRange(0.001, 1000.0)
-        self.spn_tolerancia.setSingleStep(0.01)
-        self.spn_tolerancia.setValue(0.10)
-        self.spn_tolerancia.setSuffix(" m")
-        self.chk_match_aproximado = self._reg(QCheckBox(), "chk_approx_match")
-        self.chk_match_aproximado.setChecked(True)
-        self._reg(self.chk_match_aproximado, "tip_approx_match", kind="tooltip")
-        cont_p, gp = self._bloque_filas(2)
-        self._celda_campo(gp, 0, 0, "cmp_lbl_contra", self.cb_tabla_levantado)
-        self._celda_campo(gp, 0, 1, "cmp_lbl_tolerancia", self.spn_tolerancia)
-        gp.addWidget(self.chk_match_aproximado, 1, 0, 1, 2)
-        v_c.addWidget(cont_p)
-
-        # Bloque desplegable (cerrado por defecto): comparar el resultado de
-        # DOS consultas SQL guardadas / precargadas, las mismas de "Base de
-        # Datos" (p.ej. PREPLOT receptoras contra POSTPLOT receptoras).
-        self.acc_cmp_sql = AcordeonSeccion()
-        self.acc_cmp_sql.setSizePolicy(SIZE_POLICY_IGNORED, self.acc_cmp_sql.sizePolicy().verticalPolicy())
-        cont_sql = QWidget()
-        v_sql = QVBoxLayout(cont_sql)
-        v_sql.setContentsMargins(0, 0, 0, 0)
-        v_sql.setSpacing(6)
-        self.chk_cmp_usar_sql = self._reg(ToggleSwitch(), "cmp_chk_usar_sql")
-        self._reg(self.chk_cmp_usar_sql, "cmp_tip_usar_sql", kind="tooltip")
-        v_sql.addWidget(self.chk_cmp_usar_sql)
-        self.cb_cmp_query_a = self._crear_combo_consulta_cmp()
-        self.txt_cmp_sql_a = self._crear_texto_sql_cmp()
-        self.cb_cmp_query_b = self._crear_combo_consulta_cmp()
-        self.txt_cmp_sql_b = self._crear_texto_sql_cmp()
-        self._fill_cmp_query_combos(defecto_a="preplot_all", defecto_b="postplot_all")
-        for key, cb, txt in (
-            ("cmp_lbl_query_a", self.cb_cmp_query_a, self.txt_cmp_sql_a),
-            ("cmp_lbl_query_b", self.cb_cmp_query_b, self.txt_cmp_sql_b),
-        ):
-            lbl = self._reg(QLabel(), key)
-            lbl.setStyleSheet(ESTILO_ROTULO_TENUE)
-            v_sql.addWidget(lbl)
-            v_sql.addWidget(cb)
-            v_sql.addWidget(txt)
-        lbl_nota = self._reg(QLabel(), "cmp_note_sql")
-        lbl_nota.setWordWrap(True)
-        lbl_nota.setStyleSheet(ESTILO_ROTULO_TENUE)
-        v_sql.addWidget(lbl_nota)
-        self.acc_cmp_sql.set_contenido(cont_sql)
-        v_c.addWidget(self.acc_cmp_sql)
-        self.cb_cmp_query_a.currentIndexChanged.connect(lambda _i: self._on_cmp_query_cambiada("a"))
-        self.cb_cmp_query_b.currentIndexChanged.connect(lambda _i: self._on_cmp_query_cambiada("b"))
-        self.chk_cmp_usar_sql.toggled.connect(self._on_cmp_sql_toggled)
-        self._actualizar_resumen_cmp_sql()
-        v_c.addStretch(1)
-        self.btn_comparar = self._reg(QPushButton(), "cmp_btn_comparar")
-        self.btn_comparar.setStyleSheet(ESTILO_BTN_PRIMARIO)
-        self.btn_comparar.setMinimumHeight(36)
-        self.btn_comparar.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
-        self.btn_comparar.clicked.connect(self.comparar)
-        v_c.addWidget(self.btn_comparar)
-
-        for g_ in (grp_fuente, grp_comp):
-            g_.setSizePolicy(SIZE_POLICY_IGNORED, g_.sizePolicy().verticalPolicy())
-        grid_arriba = QGridLayout()
-        grid_arriba.setColumnStretch(0, 1)
-        grid_arriba.setColumnStretch(1, 1)
-        grid_arriba.setHorizontalSpacing(10)
-        grid_arriba.addWidget(grp_fuente, 0, 0)
-        grid_arriba.addWidget(grp_comp, 0, 1)
-        v.addLayout(grid_arriba)
-
-        # ---- Centro: resumen + tabla de discrepancias ----
-        self.lbl_resumen_comparacion = QLabel("")
-        self.lbl_resumen_comparacion.setWordWrap(True)
-        self.lbl_resumen_comparacion.setStyleSheet(ESTILO_ROTULO_TENUE)
-        v.addWidget(self.lbl_resumen_comparacion)
-
-        self.tbl_resultado = QTableWidget(0, 7)
-        self.tbl_resultado.setHorizontalHeaderLabels(self._comparar_headers())
-        self.tbl_resultado.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.tbl_resultado.verticalHeader().setDefaultSectionSize(24)
-        self.tbl_resultado.setMinimumHeight(240)
-        v.addWidget(self.tbl_resultado, 1)
-
-        # ---- Barra inferior unificada: todas las salidas ----
-        barra = QHBoxLayout()
-        barra.addWidget(self._boton_barra("cmp_tb_capa", "cmp_tip_capa", self.crear_capa_comparacion))
-        barra.addWidget(self._boton_barra("cmp_tb_csv", "cmp_tip_csv", self.exportar_comparacion))
-        barra.addStretch(1)
-        self.chk_subir_preplot = self._reg(ToggleSwitch(), "cmp_chk_subir_preplot")
-        self.chk_subir_preplot.setChecked(True)
-        barra.addWidget(self.chk_subir_preplot)
-        barra.addSpacing(8)
-        self.btn_subir_comparacion = self._reg(QPushButton(), "cmp_btn_guardar")
-        self.btn_subir_comparacion.setStyleSheet(ESTILO_BTN_SUBIR_VERDE)
-        self.btn_subir_comparacion.setMinimumHeight(40)
-        self.btn_subir_comparacion.setMinimumWidth(260)
-        self.btn_subir_comparacion.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
-        self.btn_subir_comparacion.clicked.connect(self.subir_a_bd)
-        barra.addWidget(self.btn_subir_comparacion)
-        v.addLayout(barra)
-
-        w.setStyleSheet(ESTILO_TARJETAS)
-        self._toggle_fuente_diseno()
-        return w
-
-    # -- Comparar dos consultas SQL (v2.68.0) -------------------------------
+    # -- Base de Datos: comparar dos consultas SQL (v2.70.0) ------------------
+    # Una fila al pie de la tarjeta "Buscar y reemplazar": etiqueta + consulta
+    # A + consulta B + botón. Al ejecutarla se agregan al mapa de QGIS las dos
+    # capas de puntos unidas por líneas donde el nombre coincide (los puntos
+    # sin pareja llevan otro ícono) y se muestra un resumen con los conteos.
+    # Es sólo de lectura: no escribe nada en la base. Reemplaza a la antigua
+    # ventana "Comparar".
     def _crear_combo_consulta_cmp(self):
         cb = QComboBox()
         cb.setSizeAdjustPolicy(_valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy"))
-        cb.setMinimumContentsLength(14)
+        cb.setMinimumContentsLength(8)
         return cb
-
-    def _crear_texto_sql_cmp(self):
-        txt = QPlainTextEdit()
-        alto = (
-            txt.fontMetrics().lineSpacing() * 2
-            + int(txt.document().documentMargin() * 2) + 2 * txt.frameWidth() + 2
-        )
-        txt.setFixedHeight(alto)
-        return txt
 
     def _sql_para_clave_consulta(self, key):
         """SQL asociado a una entrada de los combos de consultas (preset de
@@ -9097,16 +8839,33 @@ class GNSSeismicController(QWidget):
             return None
         return self._get_effective_preset_sql(key)
 
+    def _crear_fila_comparar_consultas(self):
+        """Fila "Comparar dos consultas SQL: [A] [B] [botón]"."""
+        self.cb_cmp_query_a = self._crear_combo_consulta_cmp()
+        self.cb_cmp_query_b = self._crear_combo_consulta_cmp()
+        self._reg(self.cb_cmp_query_a, "cmp_tip_query_a", kind="tooltip")
+        self._reg(self.cb_cmp_query_b, "cmp_tip_query_b", kind="tooltip")
+        self._fill_cmp_query_combos(defecto_a="preplot_all", defecto_b="postplot_all")
+        self.btn_comparar = self._reg(QPushButton("📊"), "cmp_tip_ejecutar", kind="tooltip")
+        self.btn_comparar.setStyleSheet(ESTILO_BTN_PRIMARIO)
+        self.btn_comparar.setFixedWidth(48)
+        self.btn_comparar.setCursor(_valor_enum(Qt, "PointingHandCursor", "CursorShape"))
+        self.btn_comparar.clicked.connect(self.comparar_consultas)
+        fila = QHBoxLayout()
+        fila.setSpacing(6)
+        fila.addWidget(self._reg(QLabel(), "cmp_lbl_fila"))
+        fila.addWidget(self.cb_cmp_query_a, 1)
+        fila.addWidget(self.cb_cmp_query_b, 1)
+        fila.addWidget(self.btn_comparar)
+        return fila
+
     def _fill_cmp_query_combos(self, keep_selection=False, defecto_a=None, defecto_b=None):
-        """(Re)llena los combos A y B de "Comparar dos consultas SQL" con la
-        MISMA lista de "Base de Datos": consultas de ejemplo + las propias
-        guardadas/importadas (p.ej. las de un .qrylt de GPSeismic)."""
+        """(Re)llena los combos A y B de la comparación con la MISMA lista de
+        la consola SQL: consultas de ejemplo + las propias guardadas o
+        importadas (p.ej. las de un .qrylt de GPSeismic)."""
         if not hasattr(self, "cb_cmp_query_a"):
             return
-        for cb, txt, defecto in (
-            (self.cb_cmp_query_a, self.txt_cmp_sql_a, defecto_a),
-            (self.cb_cmp_query_b, self.txt_cmp_sql_b, defecto_b),
-        ):
+        for cb, defecto in ((self.cb_cmp_query_a, defecto_a), (self.cb_cmp_query_b, defecto_b)):
             actual = cb.currentData() if (keep_selection and cb.count()) else defecto
             cb.blockSignals(True)
             cb.clear()
@@ -9117,42 +8876,142 @@ class GNSSeismicController(QWidget):
             idx = cb.findData(actual) if actual is not None else -1
             cb.setCurrentIndex(idx if idx >= 0 else 0)
             cb.blockSignals(False)
-            if not keep_selection:
-                sql = self._sql_para_clave_consulta(cb.currentData())
-                if sql:
-                    txt.setPlainText(sql)
-        self._actualizar_resumen_cmp_sql()
 
-    def _on_cmp_query_cambiada(self, lado):
-        cb = self.cb_cmp_query_a if lado == "a" else self.cb_cmp_query_b
-        txt = self.txt_cmp_sql_a if lado == "a" else self.txt_cmp_sql_b
+    def _sql_de_combo_cmp(self, cb):
+        """SQL de la consulta elegida en un combo A/B. "Personalizada" usa lo
+        que haya escrito en el cuadro de la consola SQL en ese momento."""
         sql = self._sql_para_clave_consulta(cb.currentData())
-        if sql:
-            txt.setPlainText(sql)
-        self._actualizar_resumen_cmp_sql()
+        return sql if sql else self.txt_sql.toPlainText()
 
-    def _cmp_sql_activo(self):
-        chk = getattr(self, "chk_cmp_usar_sql", None)
-        return chk is not None and chk.isChecked()
+    def _preparar_comparacion_sql(self, dest_crs):
+        """Corre las consultas A y B y devuelve (puntos_a, puntos_b,
+        nombre_a, nombre_b) en el CRS de trabajo; None si algo falla (ya
+        avisó al usuario)."""
+        nombre_a = self.cb_cmp_query_a.currentText()
+        nombre_b = self.cb_cmp_query_b.currentText()
+        resultados = []
+        for letra, cb, nombre in (("A", self.cb_cmp_query_a, nombre_a), ("B", self.cb_cmp_query_b, nombre_b)):
+            try:
+                puntos = self._puntos_desde_consulta(self._sql_de_combo_cmp(cb), dest_crs)
+            except ValueError as e:
+                QMessageBox.warning(self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), str(e))
+                return None
+            if not puntos:
+                QMessageBox.warning(
+                    self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), self.t("cmp_err_sql_vacia")
+                )
+                return None
+            resultados.append(puntos)
+        return resultados[0], resultados[1], nombre_a, nombre_b
 
-    def _on_cmp_sql_toggled(self, activo):
-        # Con consultas SQL, la fuente (CSV/PREPLOT) y la tabla a comparar
-        # no se usan: se deshabilitan para que no confundan.
-        self.grp_cmp_fuente.setEnabled(not activo)
-        self.cb_tabla_levantado.setEnabled(not activo)
-        self._toggle_fuente_diseno()
-        self._actualizar_resumen_cmp_sql()
+    def _quitar_capas_comparacion(self):
+        """Quita del mapa las capas de la comparación anterior (nunca se
+        acumulan capas viejas)."""
+        for capa in self._cmp_layers:
+            try:
+                if QgsProject.instance().mapLayer(capa.id()) is not None:
+                    self.project.removeMapLayer(capa.id())
+            except RuntimeError:
+                # El objeto ya fue eliminado (p.ej. el usuario quitó la
+                # capa a mano) -- nada que limpiar.
+                pass
+        self._cmp_layers = []
 
-    def _actualizar_resumen_cmp_sql(self):
-        if not hasattr(self, "acc_cmp_sql"):
+    def comparar_consultas(self):
+        """Ejecuta la comparación: empareja por NOMBRE exacto los puntos de
+        la consulta A (capa 1) y de la B (capa 2), agrega al mapa las dos
+        capas de puntos unidas por líneas donde coinciden (los que no
+        tienen pareja, con otro ícono) y muestra cuántos hay en cada capa,
+        cuántos coinciden y cuántos no."""
+        if not self._require_project():
             return
-        if self._cmp_sql_activo():
-            resumen = self.t(
-                "cmp_acc_resumen_on", a=self.cb_cmp_query_a.currentText(), b=self.cb_cmp_query_b.currentText()
-            )
-        else:
-            resumen = self.t("cmp_acc_resumen_off")
-        self.acc_cmp_sql.set_textos(self.t("cmp_acc_titulo"), resumen)
+        dest_crs = self._working_crs()
+        preparado = self._preparar_comparacion_sql(dest_crs)
+        if preparado is None:
+            return
+        puntos_a, puntos_b, nombre_a, nombre_b = preparado
+        pares, solo_a, solo_b = csv_matcher.pair_points_by_name(puntos_a, puntos_b)
+
+        self._quitar_capas_comparacion()
+        self._crear_capas_comparacion(dest_crs, nombre_a, nombre_b, pares, solo_a, solo_b)
+
+        QMessageBox.information(
+            self, self.t("cmp_res_titulo"),
+            self.t(
+                "cmp_res_cuerpo",
+                nombre_a=nombre_a, nombre_b=nombre_b,
+                n_a=len(puntos_a), n_b=len(puntos_b),
+                n_coinciden=len(pares), n_no=len(solo_a) + len(solo_b),
+                solo_a=len(solo_a), solo_b=len(solo_b),
+            ),
+        )
+
+    def _crear_capas_comparacion(self, dest_crs, nombre_a, nombre_b, pares, solo_a, solo_b):
+        """Agrega al mapa: capa 1 (puntos de A), capa 2 (puntos de B) y una
+        capa de líneas que une cada par con el mismo nombre. Coincidentes y
+        sin pareja se simbolizan distinto (círculo/triángulo vs. cruz/estrella)
+        para verlos a simple vista."""
+        crs = dest_crs.authid()
+        campos = [("nombre", FIELD_STRING), ("coincide", FIELD_INT)]
+
+        def _capa_puntos(titulo, coincidentes, sin_pareja, simbolo_ok, simbolo_no, etiquetas):
+            layer = QgsVectorLayer(f"Point?crs={crs}", titulo, "memory")
+            prov = layer.dataProvider()
+            prov.addAttributes([QgsField(n, t) for n, t in campos])
+            layer.updateFields()
+            feats = []
+            for grupo, valor in ((coincidentes, 1), (sin_pareja, 0)):
+                for p in grupo:
+                    f = QgsFeature(layer.fields())
+                    f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(p["x"], p["y"])))
+                    f.setAttributes([p["name"], valor])
+                    feats.append(f)
+            prov.addFeatures(feats)
+            layer.updateExtents()
+            categorias = [
+                QgsRendererCategory(1, QgsMarkerSymbol.createSimple(simbolo_ok), etiquetas[0]),
+                QgsRendererCategory(0, QgsMarkerSymbol.createSimple(simbolo_no), etiquetas[1]),
+            ]
+            layer.setRenderer(QgsCategorizedSymbolRenderer("coincide", categorias))
+            layer.triggerRepaint()
+            return layer
+
+        capa_1 = _capa_puntos(
+            self.t("cmp_layer_1", nombre=nombre_a), [a for a, _b in pares], solo_a,
+            {"name": "circle", "size": "3", "color": "#1f78b4"},
+            {"name": "cross2", "size": "4", "color": "#e31a1c", "outline_color": "#e31a1c", "outline_width": "0.8"},
+            (self.t("cmp_leg_coincide_1"), self.t("cmp_leg_no_1")),
+        )
+        capa_2 = _capa_puntos(
+            self.t("cmp_layer_2", nombre=nombre_b), [b for _a, b in pares], solo_b,
+            {"name": "triangle", "size": "3", "color": "#6a3d9a"},
+            {"name": "star", "size": "4", "color": "#ff7f00"},
+            (self.t("cmp_leg_coincide_2"), self.t("cmp_leg_no_2")),
+        )
+
+        capa_lineas = QgsVectorLayer(f"LineString?crs={crs}", self.t("cmp_layer_enlaces"), "memory")
+        prov_l = capa_lineas.dataProvider()
+        prov_l.addAttributes([QgsField("nombre", FIELD_STRING), QgsField("dist_2d", FIELD_DOUBLE)])
+        capa_lineas.updateFields()
+        feats_l = []
+        for a, b in pares:
+            f = QgsFeature(capa_lineas.fields())
+            f.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(a["x"], a["y"]), QgsPointXY(b["x"], b["y"])]))
+            f.setAttributes([a["name"], math.hypot(b["x"] - a["x"], b["y"] - a["y"])])
+            feats_l.append(f)
+        prov_l.addFeatures(feats_l)
+        capa_lineas.updateExtents()
+        capa_lineas.setRenderer(QgsSingleSymbolRenderer(
+            QgsLineSymbol.createSimple({"line_color": "#555555", "line_width": "0.5"})
+        ))
+        capa_lineas.triggerRepaint()
+
+        # Las líneas debajo de los puntos: se agregan primero.
+        for capa in (capa_lineas, capa_2, capa_1):
+            self.project.addMapLayer(capa)
+        QApplication.processEvents()
+        self._cmp_layers = [capa_lineas, capa_2, capa_1]
+        self._zoom_canvas_a_capa(capa_1)
 
     def _puntos_desde_consulta(self, sql, dest_crs):
         """Ejecuta `sql` (sólo SELECT) y devuelve sus puntos [{name,x,y,z}]
@@ -9176,84 +9035,6 @@ class GNSSeismicController(QWidget):
                 x, y = p["a"], p["b"]
             puntos.append({"name": p["name"], "x": x, "y": y, "z": p["z"]})
         return puntos
-
-    def _preparar_comparacion_sql(self, dest_crs):
-        """Arma (diseño, levantado, etiqueta_diseño, etiqueta_levantado) a
-        partir de las consultas A (diseño) y B (levantado); None si algo
-        falla (ya avisó al usuario)."""
-        nombre_a = self.cb_cmp_query_a.currentText()
-        nombre_b = self.cb_cmp_query_b.currentText()
-        resultados = []
-        for letra, sql, nombre in (
-            ("A", self.txt_cmp_sql_a.toPlainText(), nombre_a),
-            ("B", self.txt_cmp_sql_b.toPlainText(), nombre_b),
-        ):
-            try:
-                puntos = self._puntos_desde_consulta(sql, dest_crs)
-            except ValueError as e:
-                QMessageBox.warning(self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), str(e))
-                return None
-            if not puntos:
-                QMessageBox.warning(
-                    self, self.t("cmp_err_sql_titulo", letra=letra, nombre=nombre), self.t("cmp_err_sql_vacia")
-                )
-                return None
-            resultados.append(puntos)
-        return resultados[0], resultados[1], self.t("cmp_origen_sql", nombre=nombre_a), nombre_b
-
-    def _actualizar_crs_csv_habilitado(self, *_args):
-        if getattr(self, "cont_csv_crs", None) is not None:
-            self.cont_csv_crs.setEnabled(self.rb_plana.isChecked())
-
-    def _comparar_headers(self):
-        return [
-            self.t("col_name_design"), self.t("col_name_surveyed"), self.t("col_match_type"),
-            self.t("col_delta_x"), self.t("col_delta_y"), self.t("col_dist_2d"), self.t("col_within_tol"),
-        ]
-
-    def _toggle_fuente_diseno(self):
-        usa_csv = self.rb_fuente_csv.isChecked()
-        # Con "Tabla PREPLOT" el formulario de mapeo del CSV se OCULTA.
-        self.grp_csv.setVisible(usa_csv)
-        self._actualizar_crs_csv_habilitado()
-        self.lbl_preplot_source_note.setVisible(not usa_csv)
-        usa_sql = self._cmp_sql_activo()
-        self.chk_subir_preplot.setEnabled(usa_csv and not usa_sql)
-        if usa_sql:
-            self.chk_subir_preplot.setChecked(False)
-            self.chk_subir_preplot.setToolTip(self.t("cmp_tip_subir_sql"))
-        elif not usa_csv:
-            self.chk_subir_preplot.setChecked(False)
-            self.chk_subir_preplot.setToolTip(self.t("tip_upload_preplot_disabled"))
-        else:
-            self.chk_subir_preplot.setToolTip("")
-
-    def cargar_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.t("dlg_load_csv_title"), "", self.t("filter_csv"))
-        if not path:
-            return
-        try:
-            header = csv_matcher.read_csv_header(path)
-        except Exception as e:
-            QMessageBox.critical(self, self.t("err_title"), self.t("err_csv_read", error=e))
-            return
-        if not header:
-            QMessageBox.warning(self, self.t("warn_csv_empty_title"), self.t("warn_csv_empty_body"))
-            return
-
-        self.lbl_csv_path.setText(path)
-        for cb in (self.cb_col_nombre, self.cb_col_x, self.cb_col_y):
-            cb.clear()
-            cb.addItems(header)
-        self.cb_col_z.clear()
-        self.cb_col_z.addItem(self.t("none_option"))
-        self.cb_col_z.addItems(header)
-
-        # Adivina columnas típicas para ahorrarle clics al usuario.
-        self._preseleccionar_columna(self.cb_col_nombre, ["nombre", "name", "punto", "codigo", "código", "id", "station"])
-        self._preseleccionar_columna(self.cb_col_x, ["este", "easting", "x", "long", "lon"])
-        self._preseleccionar_columna(self.cb_col_y, ["norte", "northing", "y", "lat"])
-        self._preseleccionar_columna(self.cb_col_z, ["cota", "z", "altura", "elev", "height"])
 
     @staticmethod
     def _preseleccionar_columna(combo: QComboBox, candidatos):
@@ -9364,228 +9145,6 @@ class GNSSeismicController(QWidget):
                 azimuts[track_key] = az
         return azimuts
 
-    def comparar(self):
-        if not self._require_project():
-            return
-        dest_crs = self._working_crs()
-
-        usa_sql = self._cmp_sql_activo()
-        if usa_sql:
-            preparado = self._preparar_comparacion_sql(dest_crs)
-            if preparado is None:
-                return
-            diseno, levantado, origen_diseno_label, tabla = preparado
-        elif self.rb_fuente_csv.isChecked():
-            csv_path = self.lbl_csv_path.text()
-            if not csv_path:
-                QMessageBox.information(self, self.t("info_missing_csv_title"), self.t("info_missing_csv_body"))
-                return
-
-            name_col = self.cb_col_nombre.currentText()
-            x_col = self.cb_col_x.currentText()
-            y_col = self.cb_col_y.currentText()
-            z_col = self.cb_col_z.currentText()
-            z_col = None if z_col in ("", self.t("none_option")) else z_col
-
-            try:
-                diseno_raw = csv_matcher.read_csv_points(csv_path, name_col, x_col, y_col, z_col)
-            except Exception as e:
-                QMessageBox.critical(self, self.t("err_title"), self.t("err_csv_columns", error=e))
-                return
-            if not diseno_raw:
-                QMessageBox.warning(self, self.t("warn_csv_no_data_title"), self.t("warn_csv_no_data_body"))
-                return
-
-            src_crs_csv = self.crs_wgs84 if self.rb_geografica.isChecked() else (
-                self.csv_crs_widget.crs() if self.csv_crs_widget is not None else self.crs_wgs84
-            )
-            diseno = []
-            for p in diseno_raw:
-                x, y = _transform_xy(p["x"], p["y"], src_crs_csv, dest_crs, self.project)
-                diseno.append({"name": p["name"], "x": x, "y": y, "z": p["z"], "row": p["row"]})
-            origen_diseno_label = os.path.basename(csv_path)
-        else:
-            diseno_pre = self._fetch_levantado_xy("PREPLOT", dest_crs)
-            if not diseno_pre:
-                QMessageBox.warning(self, self.t("warn_no_points_title"), self.t("warn_no_points_body", tabla="PREPLOT"))
-                return
-            diseno = [{"name": p["name"], "x": p["x"], "y": p["y"], "z": p["z"]} for p in diseno_pre]
-            origen_diseno_label = self.t("origen_diseno_preplot")
-
-        self.design_points = diseno
-        self._origen_diseno_label = origen_diseno_label
-
-        if not usa_sql:
-            tabla = self.cb_tabla_levantado.currentText()
-            if not self.rb_fuente_csv.isChecked() and tabla == "PREPLOT":
-                QMessageBox.warning(self, self.t("warn_same_table_title"), self.t("warn_same_table_body"))
-                return
-
-            levantado = self._fetch_levantado_xy(tabla, dest_crs)
-            if not levantado:
-                QMessageBox.warning(self, self.t("warn_no_points_title"), self.t("warn_no_points_body", tabla=tabla))
-                return
-
-        tolerancia = self.spn_tolerancia.value()
-        aproximado = self.chk_match_aproximado.isChecked()
-        self.match_result = csv_matcher.match_by_name(levantado, diseno, tolerancia_m=tolerancia, permitir_aproximado=aproximado)
-        self._llenar_tabla_resultado(self.match_result)
-
-        self.lbl_resumen_comparacion.setText(self.t(
-            "lbl_compare_summary",
-            matched=self.match_result.n_matched,
-            tol=tolerancia,
-            within=self.match_result.n_dentro_tolerancia,
-            only_design=len(self.match_result.solo_en_diseno),
-            only_surveyed=len(self.match_result.solo_en_levantado),
-            tabla=tabla,
-        ))
-
-    def _llenar_tabla_resultado(self, result: csv_matcher.MatchResult):
-        self.tbl_resultado.setRowCount(len(result.matched))
-        for row, m in enumerate(result.matched):
-            valores = [
-                m["name_diseno"], m["name_levantado"], m["tipo_match"],
-                f"{m['delta_x']:.3f}", f"{m['delta_y']:.3f}", f"{m['distancia_2d']:.3f}",
-                self.t("yes") if m["dentro_tolerancia"] else self.t("no"),
-            ]
-            dentro = m["dentro_tolerancia"]
-            # Tinte sutil por fila (verde: dentro de tolerancia; rojo suave:
-            # fuera), con texto oscuro fijo para que se lea también con un
-            # tema oscuro; la distancia 2D se resalta en negrita si se pasa.
-            color = COLOR_CMP_DENTRO if dentro else COLOR_CMP_FUERA
-            valores[COMPARAR_COL_TOL] = ("✔ " if dentro else "✖ ") + valores[COMPARAR_COL_TOL]
-            for col, val in enumerate(valores):
-                item = QTableWidgetItem(str(val))
-                item.setBackground(color)
-                item.setForeground(COLOR_CMP_TEXTO)
-                if not dentro and col in (COMPARAR_COL_DIST, COMPARAR_COL_TOL):
-                    fuente = item.font()
-                    fuente.setBold(True)
-                    item.setFont(fuente)
-                self.tbl_resultado.setItem(row, col, item)
-
-    def crear_capa_comparacion(self):
-        if self.match_result is None or not self.match_result.matched:
-            QMessageBox.information(self, self.t("info_no_results_title"), self.t("info_no_results_body"))
-            return
-        dest_crs = self._working_crs()
-        layer = QgsVectorLayer(f"Point?crs={dest_crs.authid()}", "Comparación diseño vs levantado", "memory")
-        prov = layer.dataProvider()
-        prov.addAttributes([
-            QgsField("nombre", FIELD_STRING),
-            QgsField("tipo_match", FIELD_STRING),
-            QgsField("delta_este", FIELD_DOUBLE),
-            QgsField("delta_norte", FIELD_DOUBLE),
-            QgsField("dist_2d", FIELD_DOUBLE),
-            QgsField("dentro_tol", FIELD_INT),
-        ])
-        layer.updateFields()
-
-        feats = []
-        for m in self.match_result.matched:
-            f = QgsFeature(layer.fields())
-            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(m["x_levantado"], m["y_levantado"])))
-            f.setAttributes([
-                m["name_levantado"], m["tipo_match"], m["delta_x"], m["delta_y"],
-                m["distancia_2d"], 1 if m["dentro_tolerancia"] else 0,
-            ])
-            feats.append(f)
-        prov.addFeatures(feats)
-        layer.updateExtents()
-
-        categorias = []
-        for valor, color, etiqueta in ((1, "#33a02c", "Dentro de tolerancia"), (0, "#e31a1c", "Fuera de tolerancia")):
-            symbol = QgsMarkerSymbol.createSimple({"name": "circle", "size": "3", "color": color})
-            categorias.append(QgsRendererCategory(valor, symbol, etiqueta))
-        layer.setRenderer(QgsCategorizedSymbolRenderer("dentro_tol", categorias))
-        layer.triggerRepaint()
-
-        self.project.addMapLayer(layer)
-        # Ver el comentario equivalente en `_crear_capa_puntos_dc`: sin
-        # procesar los eventos pendientes aquí, la capa puede no
-        # aparecer todavía en `iface.mapCanvas().layers()` justo después
-        # de agregarla.
-        QApplication.processEvents()
-        self._zoom_canvas_a_capa(layer)
-
-    def exportar_comparacion(self):
-        if self.match_result is None:
-            QMessageBox.information(self, self.t("info_no_results_title"), self.t("info_no_results_body_generic"))
-            return
-        path, _ = QFileDialog.getSaveFileName(self, self.t("dlg_export_compare_title"), "comparacion.csv", self.t("filter_csv"))
-        if not path:
-            return
-        campos = [
-            "name_diseno", "name_levantado", "tipo_match",
-            "x_diseno", "y_diseno", "z_diseno",
-            "x_levantado", "y_levantado", "z_levantado",
-            "delta_x", "delta_y", "delta_z", "distancia_2d", "distancia_3d", "dentro_tolerancia",
-        ]
-        try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                wr = csv.DictWriter(f, fieldnames=campos)
-                wr.writeheader()
-                for m in self.match_result.matched:
-                    wr.writerow({k: m.get(k) for k in campos})
-            QMessageBox.information(self, self.t("msg_export_ok_title"), self.t("msg_export_compare_body", path=path))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("err_title"), self.t("err_export_generic", error=e))
-
-    @_escritura()
-    def subir_a_bd(self):
-        if not self._require_project():
-            return
-        if self.match_result is None:
-            QMessageBox.information(self, self.t("info_no_results_title"), self.t("info_no_results_body_generic"))
-            return
-
-        try:
-            n_pre = 0
-            if (
-                self.chk_subir_preplot.isChecked() and self.design_points
-                and self.rb_fuente_csv.isChecked() and not self._cmp_sql_activo()
-            ):
-                dest_crs = self._working_crs()
-                filas_preplot = []
-                for p in self.design_points:
-                    lon, lat = None, None
-                    if dest_crs != self.crs_wgs84:
-                        lon, lat = _transform_xy(p["x"], p["y"], dest_crs, self.crs_wgs84, self.project)
-                    filas_preplot.append({
-                        "Station_Text": p["name"],
-                        "Local_Easting": p["x"],
-                        "Local_Northing": p["y"],
-                        "WGS84_Longitude": lon,
-                        "WGS84_Latitude": lat,
-                        "WGS84_Height": p.get("z"),
-                        "Local_System": dest_crs.authid(),
-                        "Populate_Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Processor": "GNSSeismic (QGIS) - CSV de diseño",
-                    })
-                n_pre = db_schema.insert_rows(self.conn, "PREPLOT", db_schema.PREPLOT_COLUMNS, filas_preplot)
-
-            origen = getattr(self, "_origen_diseno_label", "")
-            filas_comp = []
-            for m in self.match_result.matched:
-                filas_comp.append({
-                    "Station_Text": m["name_levantado"],
-                    "Origen_Diseno": origen,
-                    "Este_Diseno": m["x_diseno"], "Norte_Diseno": m["y_diseno"], "Cota_Diseno": m["z_diseno"],
-                    "Este_Levantado": m["x_levantado"], "Norte_Levantado": m["y_levantado"], "Cota_Levantada": m["z_levantado"],
-                    "Delta_Este": m["delta_x"], "Delta_Norte": m["delta_y"], "Delta_Cota": m["delta_z"],
-                    "Distancia_2D": m["distancia_2d"], "Distancia_3D": m["distancia_3d"],
-                    "Dentro_Tolerancia": 1 if m["dentro_tolerancia"] else 0,
-                    "Tolerancia_m": self.spn_tolerancia.value(),
-                })
-            n_comp = db_schema.insert_comparacion_rows(self.conn, filas_comp)
-
-            self.actualizar_conteos()
-            extra = self.t("msg_upload_extra_preplot", n_pre=n_pre) if n_pre else ""
-            QMessageBox.information(self, self.t("ok_title"), self.t("msg_upload_body", n_comp=n_comp, extra=extra))
-        except Exception as e:
-            QMessageBox.critical(self, self.t("err_title"), self.t("err_upload_db", error=e, trace=traceback.format_exc()))
-
     # -- Sección: Base de Datos --------------------------------------------
     # -- Sección: Base de Datos (rediseño v2.66.0) ---------------------------
     # Arriba, dos tarjetas lado a lado (50/50): "Consola SQL" (selector de
@@ -9604,7 +9163,7 @@ class GNSSeismicController(QWidget):
             v, [
                 "bd_intro", "lbl_query_map_note", "lbl_query_edit_note",
                 "note_import_export_queries", "lbl_search_replace_note",
-                "note_bd_botones",
+                "note_bd_botones", "cmp_note_sql",
             ], "tab5_title",
         )
 
@@ -9648,7 +9207,53 @@ class GNSSeismicController(QWidget):
         fila_preset.addWidget(self.btn_mas_consultas)
         col_sql.addLayout(fila_preset)
 
-        # Cuadro de texto de tamaño fijo: 3 líneas.
+        # Asistente visual de filtro (v2.72.0): Columna | Condición | Valor |
+        # Conector | (+). Cada "+" agrega la condición al WHERE de la
+        # consulta de la consola (ver `_agregar_condicion_consulta_bd`); el
+        # cuadro de SQL queda oculto detrás de "Modo Desarrollador (SQL)".
+        grid_wiz = QGridLayout()
+        grid_wiz.setHorizontalSpacing(6)
+        grid_wiz.setVerticalSpacing(1)
+        for c in range(4):
+            grid_wiz.setColumnStretch(c, 3)
+        for col, key in enumerate(("lbl_filtro_wizard_columna", "lbl_filtro_wizard_operador",
+                                   "ph_filtro_wizard_valor_lbl", "lbl_filtro_wizard_conector")):
+            lbl = self._reg(QLabel(), key)
+            lbl.setStyleSheet(ESTILO_ROTULO_TENUE)
+            grid_wiz.addWidget(lbl, 0, col)
+        self.cb_bd_wiz_columna = QComboBox()
+        self.cb_bd_wiz_operador = QComboBox()
+        self.txt_bd_wiz_valor = QLineEdit()
+        self._reg(self.txt_bd_wiz_valor, "ph_filtro_wizard_valor", kind="placeholder")
+        self.cb_bd_wiz_conector = QComboBox()
+        for c, wdg in enumerate((self.cb_bd_wiz_columna, self.cb_bd_wiz_operador,
+                                 self.txt_bd_wiz_valor, self.cb_bd_wiz_conector)):
+            wdg.setSizePolicy(SIZE_POLICY_IGNORED, wdg.sizePolicy().verticalPolicy())
+            grid_wiz.addWidget(wdg, 1, c)
+        btn_wiz_mas = QPushButton("+")
+        btn_wiz_mas.setStyleSheet(ESTILO_BTN_ICONO)
+        btn_wiz_mas.setFixedWidth(34)
+        self._reg(btn_wiz_mas, "tip_btn_agregar_condicion_consulta", kind="tooltip")
+        btn_wiz_mas.clicked.connect(self._agregar_condicion_consulta_bd)
+        grid_wiz.addWidget(btn_wiz_mas, 1, 4)
+        self.txt_bd_wiz_valor.returnPressed.connect(self._agregar_condicion_consulta_bd)
+        self._fill_bd_wiz_operadores()
+        col_sql.addLayout(grid_wiz)
+
+        self.lbl_bd_cond_actual = QLabel("")
+        self.lbl_bd_cond_actual.setWordWrap(True)
+        self.lbl_bd_cond_actual.setStyleSheet(ESTILO_ROTULO_TENUE)
+        col_sql.addWidget(self.lbl_bd_cond_actual)
+
+        self.btn_bd_sql_dev = QPushButton()
+        self.btn_bd_sql_dev.setCheckable(True)
+        self.btn_bd_sql_dev.setChecked(False)
+        self.btn_bd_sql_dev.setFlat(True)
+        self.btn_bd_sql_dev.setStyleSheet(ESTILO_BTN_ENLACE)
+        self._reg(self.btn_bd_sql_dev, "tip_btn_sql_dev_consulta", kind="tooltip")
+        col_sql.addWidget(self.btn_bd_sql_dev)
+
+        # Cuadro de texto de tamaño fijo: 3 líneas (oculto por defecto).
         self.txt_sql = QPlainTextEdit()
         self.txt_sql.setPlainText(self._get_effective_preset_sql("postplot_all"))
         alto_3_lineas = (
@@ -9657,7 +9262,14 @@ class GNSSeismicController(QWidget):
             + 2 * self.txt_sql.frameWidth() + 2
         )
         self.txt_sql.setFixedHeight(alto_3_lineas)
+        self.txt_sql.setVisible(False)
         col_sql.addWidget(self.txt_sql)
+        self.btn_bd_sql_dev.toggled.connect(self.txt_sql.setVisible)
+        self.btn_bd_sql_dev.toggled.connect(lambda _c: self._actualizar_texto_boton_sql_dev_bd())
+        self.txt_sql.textChanged.connect(self._on_txt_sql_cambio)
+        self._actualizar_texto_boton_sql_dev_bd()
+        self._poblar_columnas_wizard_bd()
+        self._actualizar_cond_actual_bd()
 
         # Barra de acciones icónica, justo debajo del cuadro. Cada botón
         # tiene un tooltip ("tip_btn_...") con la explicación completa (ver
@@ -9734,6 +9346,8 @@ class GNSSeismicController(QWidget):
         fila_sr_botones.addWidget(self.btn_sr_reemplazar)
         v_buscar.addLayout(fila_sr_botones)
         v_buscar.addStretch(1)
+        # Fila inferior: comparar dos consultas SQL (ver `comparar_consultas`).
+        v_buscar.addLayout(self._crear_fila_comparar_consultas())
 
         # Mitad y mitad de verdad: `QSizePolicy.Ignored` le dice al layout
         # que IGNORE el sizeHint de cada tarjeta, y un QGridLayout con las
@@ -9767,8 +9381,17 @@ class GNSSeismicController(QWidget):
         self.tbl_query.itemChanged.connect(self._on_query_cell_changed)
         v.addWidget(self.tbl_query, 1)
 
-        # ---- Abajo izquierda: Mapeo de columnas ----
-        grp_map, v_map = self._tarjeta_card("bd_card_mapeo")
+        # ---- Abajo: UN solo botón expandible "Exportar consulta a:"
+        # (v2.73.0; en la v2.71.0 eran dos, uno de mapeo y otro de salida).
+        # Cerrado por defecto para dar más alto a la previsualización; al
+        # abrirlo, a la izquierda el mapeo de columnas y a la derecha el
+        # formato de salida. ----
+        self.acc_bd_export = AcordeonSeccion()
+        cont_mapeo = QWidget()
+        v_map = QVBoxLayout(cont_mapeo)
+        v_map.setContentsMargins(0, 0, 0, 0)
+        v_map.setSpacing(6)
+        v_map.addWidget(self._rotulo_subseccion("bd_card_mapeo"))
         self.cb_map_nombre = self._combo_campo()
         self.cb_map_linea = self._combo_campo()
         self.cb_map_punto_sps = self._combo_campo()
@@ -9785,16 +9408,20 @@ class GNSSeismicController(QWidget):
         self._celda_campo(g, 1, 2, "bd_map_z", self.cb_map_z)
         self._celda_campo(g, 2, 0, "bd_map_codigo", self.cb_map_codigo)
         v_map.addWidget(cont_map)
-        v_map.addStretch(1)
         self.chk_map_geografica = self._reg(ToggleSwitch(), "chk_map_geographic")
         v_map.addWidget(self.chk_map_geografica)
+        v_map.addStretch(1)
 
-        # ---- Abajo derecha: Formato de salida ----
+        # ---- Formato de salida (mitad derecha del desplegable) ----
         # Pedido del usuario (v2.21.0): una única lista desplegable de
         # formato + un solo botón "Exportar...", con Excel (.csv) como
         # cuarto formato. Las opciones de SPS (tipo de punto, índice, código
         # fijo) sólo se muestran si el formato elegido es SPS.
-        grp_sal, v_sal = self._tarjeta_card("bd_card_salida")
+        cont_salida = QWidget()
+        v_sal = QVBoxLayout(cont_salida)
+        v_sal.setContentsMargins(0, 0, 0, 0)
+        v_sal.setSpacing(6)
+        v_sal.addWidget(self._rotulo_subseccion("bd_card_salida"))
         fila_fmt = QHBoxLayout()
         fila_fmt.addWidget(self._reg(QLabel(), "lbl_export_format"))
         self.cb_export_format = QComboBox()
@@ -9828,7 +9455,6 @@ class GNSSeismicController(QWidget):
         self._celda_campo(g, 0, 1, "lbl_sps_fixed_code", self.txt_sps_codigo_fijo)
         v_sps.addWidget(cont_sps)
         v_sal.addWidget(self.cont_opciones_sps)
-        v_sal.addStretch(1)
 
         self.btn_export = self._reg(QPushButton(), "btn_export_run")
         self.btn_export.setStyleSheet(ESTILO_BTN_PRIMARIO)
@@ -9838,19 +9464,143 @@ class GNSSeismicController(QWidget):
         v_sal.addWidget(self.btn_export)
         self.cb_export_format.currentIndexChanged.connect(self._actualizar_visibilidad_opciones_sps)
         self._actualizar_visibilidad_opciones_sps()
+        v_sal.addStretch(1)
 
-        for g in (grp_map, grp_sal):
-            g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
-        grid_abajo = QGridLayout()
-        grid_abajo.setColumnStretch(0, 1)
-        grid_abajo.setColumnStretch(1, 1)
-        grid_abajo.setHorizontalSpacing(10)
-        grid_abajo.addWidget(grp_map, 0, 0)
-        grid_abajo.addWidget(grp_sal, 0, 1)
-        v.addLayout(grid_abajo)
+        for c_ in (cont_mapeo, cont_salida):
+            c_.setSizePolicy(SIZE_POLICY_IGNORED, c_.sizePolicy().verticalPolicy())
+        grid_export = QGridLayout()
+        grid_export.setColumnStretch(0, 1)
+        grid_export.setColumnStretch(1, 1)
+        grid_export.setHorizontalSpacing(14)
+        grid_export.addWidget(cont_mapeo, 0, 0)
+        grid_export.addWidget(cont_salida, 0, 1)
+        self.acc_bd_export.set_contenido(grid_export)
+        self.acc_bd_export.setSizePolicy(SIZE_POLICY_IGNORED, self.acc_bd_export.sizePolicy().verticalPolicy())
+        v.addWidget(self.acc_bd_export)
+        self.cb_export_format.currentIndexChanged.connect(self._actualizar_resumen_bd_acordeones)
+        self._actualizar_resumen_bd_acordeones()
 
         w.setStyleSheet(ESTILO_TARJETAS)
         return w
+
+    # -- Asistente de filtro de la Consola SQL (v2.72.0) ------------------
+    def _fill_bd_wiz_operadores(self, keep_selection=False):
+        """Operadores y conectores del asistente (traducibles)."""
+        for combo, items in (
+            (self.cb_bd_wiz_operador, [(k, self.t(lbl)) for k, lbl in self._PREVIEW_FILTER_OPERATORS]),
+            (self.cb_bd_wiz_conector, [("AND", self.t("opt_filtro_wizard_and")), ("OR", self.t("opt_filtro_wizard_or"))]),
+        ):
+            actual = combo.currentData() if (keep_selection and combo.count()) else None
+            combo.blockSignals(True)
+            combo.clear()
+            for clave, texto in items:
+                combo.addItem(texto, clave)
+            idx = combo.findData(actual)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _tabla_de_consulta_actual(self):
+        """Tabla (POSTPLOT/PREPLOT/COMPARACION) sobre la que trabaja el
+        asistente: la de la consulta de la consola si es un SELECT simple
+        de una tabla del proyecto; si no, POSTPLOT."""
+        partes = db_schema.split_simple_select(self.txt_sql.toPlainText())
+        if partes is not None and partes[1].upper() in db_schema.DELETABLE_TABLES:
+            return partes[1].upper()
+        return "POSTPLOT"
+
+    def _poblar_columnas_wizard_bd(self, forzar=False):
+        """Columnas reales de la tabla de la consulta actual (sin ID) en el
+        combo del asistente. Sólo repuebla si cambió la tabla (o `forzar`)."""
+        if not hasattr(self, "cb_bd_wiz_columna"):
+            return
+        tabla = self._tabla_de_consulta_actual()
+        if not forzar and tabla == getattr(self, "_bd_wiz_tabla", None) and self.cb_bd_wiz_columna.count():
+            return
+        previa = self.cb_bd_wiz_columna.currentData()
+        self.cb_bd_wiz_columna.blockSignals(True)
+        self.cb_bd_wiz_columna.clear()
+        self._bd_wiz_tabla = tabla
+        if self.conn is not None:
+            try:
+                tipos = db_schema.table_column_types(self.conn, tabla)
+            except Exception:
+                tipos = {}
+            for nombre, tipo in tipos.items():
+                if nombre != "ID":
+                    self.cb_bd_wiz_columna.addItem(nombre, (nombre, "num" if db_schema.is_numeric_sql_type(tipo) else "text"))
+        for i in range(self.cb_bd_wiz_columna.count()):
+            if previa and self.cb_bd_wiz_columna.itemData(i)[0] == previa[0]:
+                self.cb_bd_wiz_columna.setCurrentIndex(i)
+                break
+        self.cb_bd_wiz_columna.blockSignals(False)
+
+    def _on_txt_sql_cambio(self):
+        self._poblar_columnas_wizard_bd()
+        self._actualizar_cond_actual_bd()
+
+    def _actualizar_cond_actual_bd(self):
+        """"Condición actual: ..." en lenguaje llano: el WHERE de la
+        consulta de la consola, "(ninguna)" si no tiene, o un aviso si la
+        consulta es más compleja que un SELECT simple."""
+        if not hasattr(self, "lbl_bd_cond_actual"):
+            return
+        partes = db_schema.split_simple_select(self.txt_sql.toPlainText())
+        if partes is None:
+            texto = self.t("lbl_filtro_actual", c=self.t("bd_cond_sql_compleja"))
+            self.lbl_bd_cond_actual.setToolTip("")
+        else:
+            where = partes[2]
+            texto = self.t("lbl_filtro_actual", c=where or self.t("acc_none"))
+            self.lbl_bd_cond_actual.setToolTip(where or "")
+        self.lbl_bd_cond_actual.setText(texto)
+
+    def _actualizar_texto_boton_sql_dev_bd(self):
+        key = "btn_sql_dev_hide" if self.btn_bd_sql_dev.isChecked() else "btn_sql_dev_show"
+        self.btn_bd_sql_dev.setText(self.t(key))
+
+    def _agregar_condicion_consulta_bd(self):
+        """Botón "+": arma la condición (columna + condición + valor) y la
+        agrega al WHERE de la consulta de la consola, unida con Y/O si ya
+        había una. No ejecuta: sigue haciendo falta "Ejecutar"."""
+        datos = self.cb_bd_wiz_columna.currentData()
+        if not datos:
+            QMessageBox.warning(self, self.t("warn_missing_data_title"), self.t("err_sr_missing_column"))
+            return
+        nombre, tipo = datos
+        condicion = db_schema.build_filter_condition(
+            f"[{nombre}]", tipo, self.cb_bd_wiz_operador.currentData(), self.txt_bd_wiz_valor.text()
+        )
+        if condicion is None:
+            QMessageBox.warning(self, self.t("err_title"), self.t("err_filtro_wizard_valor_invalido"))
+            return
+        sql_actual = self.txt_sql.toPlainText().strip()
+        if not sql_actual:
+            sql_actual = f"SELECT * FROM {self._tabla_de_consulta_actual()}"  # nosec B608
+        nuevo = db_schema.add_where_condition(sql_actual, condicion, self.cb_bd_wiz_conector.currentData())
+        if nuevo is None:
+            QMessageBox.warning(self, self.t("err_title"), self.t("err_bd_wiz_sql_compleja"))
+            return
+        self.txt_sql.setPlainText(nuevo)
+        self.txt_bd_wiz_valor.clear()
+        idx_custom = self.cb_query_preset.findData("custom")
+        if idx_custom >= 0 and self.cb_query_preset.currentIndex() != idx_custom:
+            self.cb_query_preset.blockSignals(True)
+            self.cb_query_preset.setCurrentIndex(idx_custom)
+            self.cb_query_preset.blockSignals(False)
+
+    def _rotulo_subseccion(self, key):
+        """Título en negrita de cada mitad del desplegable "Exportar consulta a"."""
+        lbl = self._reg(QLabel(), key)
+        f = lbl.font()
+        f.setBold(True)
+        lbl.setFont(f)
+        return lbl
+
+    def _actualizar_resumen_bd_acordeones(self, *_args):
+        """Cabecera del botón "Exportar consulta a: <formato elegido>"."""
+        if not hasattr(self, "acc_bd_export"):
+            return
+        self.acc_bd_export.set_textos(self.t("bd_acc_exportar"), self.cb_export_format.currentText())
 
     def _actualizar_visibilidad_opciones_sps(self, *_args):
         """Las opciones de SPS (fuente/receptor, índice, código fijo) sólo
@@ -10245,6 +9995,7 @@ class GNSSeismicController(QWidget):
         self._preseleccionar_columna(self.cb_map_y, ["northing", "norte", "latitude", "lat", "y"])
         self._preseleccionar_columna(self.cb_map_z, ["height", "elevacion", "elevation", "altura", "z", "bin"])
         self._preseleccionar_columna(self.cb_map_codigo, ["descriptor", "codigo", "code"])
+        self._actualizar_resumen_bd_acordeones()
 
         # Vista previa automática en el mapa (v2.14.0): usa el mismo mapeo
         # de columnas que se acaba de preseleccionar arriba. Si la consulta

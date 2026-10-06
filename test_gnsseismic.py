@@ -1494,6 +1494,40 @@ class TestPointsFromQueryRows(unittest.TestCase):
         self.assertTrue(res.matched[0]["dentro_tolerancia"])
 
 
+class TestPairPointsByName(unittest.TestCase):
+    @staticmethod
+    def _pt(name, x=0.0, y=0.0):
+        return {"name": name, "x": x, "y": y, "z": None}
+
+    def test_pairs_and_leftovers(self):
+        a = [self._pt("R1"), self._pt("R2"), self._pt("R3")]
+        b = [self._pt("R2", 1), self._pt("R3", 2), self._pt("R9")]
+        pares, solo_a, solo_b = csv_matcher.pair_points_by_name(a, b)
+        self.assertEqual([(p["name"], q["name"]) for p, q in pares], [("R2", "R2"), ("R3", "R3")])
+        self.assertEqual([p["name"] for p in solo_a], ["R1"])
+        self.assertEqual([p["name"] for p in solo_b], ["R9"])
+
+    def test_exact_names_only(self):
+        a = [self._pt("1025-5092")]
+        b = [self._pt("10255092")]
+        pares, solo_a, solo_b = csv_matcher.pair_points_by_name(a, b)
+        self.assertEqual(pares, [])
+        self.assertEqual((len(solo_a), len(solo_b)), (1, 1))
+
+    def test_duplicates_pair_as_multiset(self):
+        a = [self._pt("P", 1), self._pt("P", 2), self._pt("P", 3)]
+        b = [self._pt("P", 10), self._pt("P", 20)]
+        pares, solo_a, solo_b = csv_matcher.pair_points_by_name(a, b)
+        self.assertEqual([(p["x"], q["x"]) for p, q in pares], [(1, 10), (2, 20)])
+        self.assertEqual([p["x"] for p in solo_a], [3])
+        self.assertEqual(solo_b, [])
+
+    def test_empty_sides(self):
+        self.assertEqual(csv_matcher.pair_points_by_name([], []), ([], [], []))
+        pares, solo_a, solo_b = csv_matcher.pair_points_by_name([self._pt("A")], [])
+        self.assertEqual((pares, len(solo_a), solo_b), ([], 1, []))
+
+
 class TestPreplotGenerator(unittest.TestCase):
     def test_grid_basic_geometry(self):
         pts = preplot_generator.generate_grid_preplot(
@@ -3488,6 +3522,77 @@ class MetadataTxtTests(unittest.TestCase):
         for clave, _valor in cp.items("general"):
             cp.get("general", clave)  # fuerza la interpolación de cada valor
         self.assertTrue(cp.get("general", "version"))
+
+class TestConsoleFilterWizard(unittest.TestCase):
+    """Funciones puras del asistente de filtro de la Consola SQL (v2.72.0)."""
+
+    def test_split_simple_select(self):
+        head, tabla, where, tail = db_schema.split_simple_select(
+            "SELECT * FROM POSTPLOT WHERE Track = 3 ORDER BY Bin LIMIT 5;")
+        self.assertEqual(head, "SELECT * FROM POSTPLOT")
+        self.assertEqual(tabla, "POSTPLOT")
+        self.assertEqual(where, "Track = 3")
+        self.assertEqual(tail, "ORDER BY Bin LIMIT 5")
+
+    def test_split_without_where(self):
+        _h, _t, where, tail = db_schema.split_simple_select("select * from preplot")
+        self.assertIsNone(where)
+        self.assertEqual(tail, "")
+
+    def test_split_rejects_complex_queries(self):
+        for sql in (
+            "SELECT a.* FROM POSTPLOT a JOIN PREPLOT b ON a.Station_Text=b.Station_Text",
+            "SELECT Track, COUNT(*) FROM POSTPLOT GROUP BY Track",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "SELECT * FROM POSTPLOT UNION SELECT * FROM PREPLOT",
+            "DELETE FROM POSTPLOT",
+        ):
+            self.assertIsNone(db_schema.split_simple_select(sql), sql)
+
+    def test_add_where_condition_without_where(self):
+        self.assertEqual(
+            db_schema.add_where_condition("SELECT * FROM POSTPLOT", "[Track] = 3"),
+            "SELECT * FROM POSTPLOT WHERE [Track] = 3")
+
+    def test_add_where_condition_joins_and_keeps_tail(self):
+        r = db_schema.add_where_condition(
+            "SELECT * FROM POSTPLOT WHERE Track = 3 ORDER BY Bin", "Bin > 2", "OR")
+        self.assertEqual(r, "SELECT * FROM POSTPLOT WHERE (Track = 3) OR (Bin > 2) ORDER BY Bin")
+
+    def test_add_where_condition_bad_connector_defaults_to_and(self):
+        r = db_schema.add_where_condition("SELECT * FROM POSTPLOT WHERE a = 1", "b = 2", "x; DROP")
+        self.assertIn(") AND (", r)
+
+    def test_add_where_condition_complex_returns_none(self):
+        self.assertIsNone(db_schema.add_where_condition(
+            "SELECT * FROM POSTPLOT GROUP BY Track", "a = 1"))
+
+    def test_result_is_executable(self):
+        conn = db_schema.create_project_db(os.path.join(tempfile.mkdtemp(), "w.db"))
+        db_schema.insert_rows(conn, "POSTPLOT", ["Station_Text", "Track"],
+                              [{"Station_Text": "A", "Track": 1}, {"Station_Text": "B'x", "Track": 2}])
+        cond = db_schema.build_filter_condition("[Station_Text]", "text", "=", "B'x")
+        sql = db_schema.add_where_condition("SELECT * FROM POSTPLOT", cond)
+        _cols, rows = db_schema.run_query(conn, sql)
+        self.assertEqual(len(rows), 1)
+
+    def test_build_filter_condition(self):
+        b = db_schema.build_filter_condition
+        self.assertEqual(b("c", "num", ">", "5"), "c > 5")
+        self.assertIsNone(b("c", "num", ">", "abc"))
+        self.assertIsNone(b("c", "text", "=", ""))
+        self.assertEqual(b("c", "text", "contiene", "x"), "c LIKE '%x%'")
+        self.assertEqual(b("c", "text", "no_contiene", "x"), "NOT c LIKE '%x%'")
+        self.assertEqual(b("c", "text", "vacio", ""), "(c IS NULL OR c = '')")
+        self.assertEqual(b("c", "num", "no_vacio", ""), "c IS NOT NULL")
+        self.assertIsNone(b("c", "text", "raro", "x"))
+
+    def test_column_types(self):
+        conn = db_schema.create_project_db(os.path.join(tempfile.mkdtemp(), "t.db"))
+        tipos = db_schema.table_column_types(conn, "POSTPLOT")
+        self.assertFalse(db_schema.is_numeric_sql_type(tipos["Station_Text"]))
+        self.assertTrue(db_schema.is_numeric_sql_type(tipos["Local_Easting"]))
+        self.assertTrue(db_schema.is_numeric_sql_type(tipos["Track"]))
 
 
 if __name__ == "__main__":
