@@ -17,6 +17,7 @@ import unittest
 
 import db_schema
 import csv_matcher
+import vemos
 from dc_parser import (
     parse_dc_text, parse_line, receiver_arp_offset_m, receiver_arp_offset_known,
     resolve_receiver_arp_offset, receiver_arp_offset_known_for_file, _extract_e2nm,
@@ -3593,6 +3594,257 @@ class TestConsoleFilterWizard(unittest.TestCase):
         self.assertFalse(db_schema.is_numeric_sql_type(tipos["Station_Text"]))
         self.assertTrue(db_schema.is_numeric_sql_type(tipos["Local_Easting"]))
         self.assertTrue(db_schema.is_numeric_sql_type(tipos["Track"]))
+
+_VEMOS2017_MUESTRA = """File: VEMOS2017.TXT
+Content: Velocity model for SIRGAS 2017
+Reference frame: IGS14/ITRF2014
+Time span: 2014.0 - 2017.1
+
+Column 1 Latitude [dec degrees]
+Column 2 Longitude [dec degrees]
+Column 3 Velocity in N-S direction [m/a]
+Column 4 Velocity in W-E direction [m/a]
+Column 5 Uncertainty of velocity in N-S direction [m/a]
+Column 6 Uncertainty of velocity in W-E direction [m/a]
+
+
+  32.0  -110.0   -0.0079   -0.0090   0.0006   0.0016
+  32.0  -109.0   -0.0074   -0.0091   0.0006   0.0016
+  32.0  -108.0   -0.0092   -0.0109   0.0027   0.0011
+  31.0  -110.0   -0.0079   -0.0084   0.0006   0.0016
+  31.0  -109.0   -0.0074   -0.0085   0.0006   0.0016
+  31.0  -108.0   -0.0084   -0.0093   0.0028   0.0019
+"""
+
+_VEMOS2022_MUESTRA = """VEMOS2022: Velocity Model for SIRGAS 2022
+
+File: VEMOS2022.TXT
+Content: Velocity model for SIRGAS 2022
+Reference Frame: ITRF2020
+Time span: 2017.1 - 2022.0
+
+Column 1 Latitude [dec degrees]
+Column 2 Longitude [dec degrees]
+Column 3 Velocity in N-S direction [m/a]
+
+
+  13.0   -73.0    0.0154    0.0099   0.0005   0.0011
+  13.0   -72.0    0.0139    0.0105   0.0008   0.0017
+  12.0   -74.0    0.0150    0.0103   0.0004   0.0006
+  12.0   -73.0    0.0154    0.0100   0.0005   0.0011
+  12.0   -72.0    0.0144    0.0101   0.0012   0.0017
+"""
+
+# Sólo 4 columnas y encabezado con las columnas mal rotuladas (como VEMOS2015)
+_VEMOS2015_MUESTRA = """VEMOS2015: Velocity Model for SIRGAS 2015
+Reference frame: IGb08/ITRF2008
+Time span: 2010.2 - 2015.2
+
+Column 2 Latitude [dec degrees]
+Column 1 Longitude [dec degrees]
+Column 4 Velocity in N-S direction [m/a]
+Column 3 Velocity in W-E direction [m/a]
+
+
+ -13.0   -73.0    0.0110    0.0056
+ -14.0   -73.0    0.0112    0.0076
+ -14.0   -72.0    0.0117    0.0068
+ -14.0   -71.0    0.0130    0.0067
+"""
+
+
+class TestVemos(unittest.TestCase):
+    def test_parse_vemos2017_header_and_rows(self):
+        g = vemos.parse_vemos_text(_VEMOS2017_MUESTRA)
+        self.assertEqual(len(g), 6)
+        self.assertEqual(g.marco, "IGS14/ITRF2014")
+        self.assertEqual(g.periodo, (2014.0, 2017.1))
+        self.assertEqual(g.nodo(32.0, -110.0), (-0.0079, -0.0090))
+        self.assertEqual(g.cobertura(), (31.0, 32.0, -110.0, -108.0))
+
+    def test_parse_four_columns_and_mislabeled_header(self):
+        g = vemos.parse_vemos_text(_VEMOS2015_MUESTRA)
+        self.assertEqual(len(g), 4)
+        self.assertEqual(g.nodo(-13.0, -73.0), (0.0110, 0.0056))
+
+    def test_parse_mm_per_year_header_is_scaled(self):
+        txt = "Column 3 Velocity in N-S direction [mm/a]\n 10.0 -70.0 12.0 8.0\n"
+        g = vemos.parse_vemos_text(txt)
+        self.assertAlmostEqual(g.nodo(10.0, -70.0)[0], 0.012)
+
+    def test_parse_without_data_raises(self):
+        with self.assertRaises(ValueError):
+            vemos.parse_vemos_text("File: x\nTime span: 2000.0 - 2009.6\n")
+
+    def test_longitude_0_360_is_normalised(self):
+        g = vemos.parse_vemos_text(" 10.0 290.0 0.01 0.01\n")
+        self.assertIsNotNone(g.nodo(10.0, -70.0))
+
+    def test_interpolation_on_a_node_returns_the_node(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        vsn, vwe, n = vemos.interpolar_velocidad(g, 12.0, -73.0)
+        self.assertEqual((vsn, vwe, n), (0.0154, 0.0100, 1))
+
+    def test_interpolation_inside_cell_is_between_nodes(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        vsn, vwe, n = vemos.interpolar_velocidad(g, 12.4, -72.6)
+        self.assertEqual(n, 4)
+        self.assertTrue(0.0139 <= vsn <= 0.0154)
+        self.assertTrue(0.0099 <= vwe <= 0.0105)
+
+    def test_interpolation_uses_inverse_distance_weights(self):
+        g = vemos.VemosGrid({(0.0, 0.0): (1.0, 0.0), (0.0, 1.0): (3.0, 0.0)})
+        # a 1/4 del camino entre ambos nodos: pesos 1/d y 1/(3d) -> 1.5
+        vsn, _vwe, n = vemos.interpolar_velocidad(g, 0.0, 0.25)
+        self.assertEqual(n, 2)
+        self.assertAlmostEqual(vsn, 1.5, places=3)
+
+    def test_interpolation_skips_missing_nodes(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        # celda (12..13, -74..-73): sólo hay (12,-74), (12,-73) y (13,-73)
+        _vsn, _vwe, n = vemos.interpolar_velocidad(g, 12.5, -73.5)
+        self.assertEqual(n, 3)
+
+    def test_interpolation_outside_coverage_is_none(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        self.assertIsNone(vemos.interpolar_velocidad(g, 40.0, 10.0))     # Europa
+        self.assertIsNone(vemos.interpolar_velocidad(g, -34.6, -58.4))   # sin nodos en la muestra
+
+    def test_works_outside_south_america(self):
+        # Norte de México/EE.UU. fronterizo: también lo cubre VEMOS2017
+        g = vemos.parse_vemos_text(_VEMOS2017_MUESTRA)
+        vsn, vwe, n = vemos.interpolar_velocidad(g, 31.5, -109.5)
+        self.assertEqual(n, 4)
+        self.assertAlmostEqual(vsn, -0.00765, delta=1.5e-4)
+        self.assertAlmostEqual(vwe, -0.00875, delta=2e-4)
+
+    def test_geocentric_roundtrip(self):
+        for lat, lon, h in ((4.711, -74.072, 2600.0), (-33.4, -70.6, 500.0), (19.4, -99.1, 2240.0), (-54.8, -68.3, 10.0)):
+            x, y, z = vemos.geodetica_a_geocentrica(lat, lon, h)
+            la, lo, he = vemos.geocentrica_a_geodetica(x, y, z)
+            self.assertAlmostEqual(la, lat, places=10)
+            self.assertAlmostEqual(lo, lon, places=10)
+            self.assertAlmostEqual(he, h, places=5)
+
+    def test_geocentric_velocity_has_horizontal_norm(self):
+        vx, vy, vz = vemos.velocidad_geocentrica(4.7, -74.0, 0.012, 0.010)
+        self.assertAlmostEqual(math.sqrt(vx * vx + vy * vy + vz * vz), math.hypot(0.012, 0.010), places=10)
+        # sin componente vertical: V es perpendicular a la normal del elipsoide
+        p, l = math.radians(4.7), math.radians(-74.0)
+        arriba = (math.cos(p) * math.cos(l), math.cos(p) * math.sin(l), math.sin(p))
+        self.assertAlmostEqual(vx * arriba[0] + vy * arriba[1] + vz * arriba[2], 0.0, places=12)
+
+    def test_increments_method_agrees_with_rotation_in_colombia_and_elsewhere(self):
+        for lat in (-4.0, 4.7, 13.0, 31.5, -45.0):
+            a = vemos.velocidad_geocentrica(lat, -74.0, 0.012, 0.010)
+            b = vemos.velocidad_geocentrica_por_incrementos(lat, -74.0, 0.012, 0.010)
+            self.assertLess(math.dist(a, b), 1e-4, lat)  # < 0.1 mm/año
+
+    def test_cambiar_epoca_moves_point_by_velocity_times_dt(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        r = vemos.cambiar_epoca(g, 12.0, -73.0, 100.0, 2024.0, 2018.0)
+        self.assertIsNotNone(r)
+        esperado = math.hypot(0.0154, 0.0100) * 6.0
+        self.assertAlmostEqual(r.desplazamiento_m, esperado, places=6)
+        # época futura -> sentido contrario; el norte/este del cambio coincide con el signo de V
+        self.assertLess(r.lat, 12.0)   # VSN > 0 y t_ref < t_obs: el punto retrocede hacia el sur
+        self.assertLess(r.lon, -73.0)  # VWE > 0 y t_ref < t_obs: hacia el oeste
+        self.assertAlmostEqual(r.h, 100.0, delta=0.001)
+
+    def test_cambiar_epoca_same_epoch_is_identity(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        r = vemos.cambiar_epoca(g, 12.3, -72.7, 55.5, 2020.0, 2020.0)
+        self.assertAlmostEqual(r.lat, 12.3, places=11)
+        self.assertAlmostEqual(r.lon, -72.7, places=11)
+        self.assertAlmostEqual(r.desplazamiento_m, 0.0, places=9)
+
+    def test_cambiar_epoca_outside_coverage_is_none(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        self.assertIsNone(vemos.cambiar_epoca(g, 48.0, 2.0, 0.0, 2020.0, 2018.0))
+
+    def test_cambiar_epoca_roundtrip(self):
+        g = vemos.parse_vemos_text(_VEMOS2022_MUESTRA)
+        r1 = vemos.cambiar_epoca(g, 12.4, -72.6, 10.0, 2024.0, 2018.0)
+        r2 = vemos.cambiar_epoca(g, r1.lat, r1.lon, r1.h, 2018.0, 2024.0)
+        # la velocidad se reinterpola en otro punto (a ~9 cm): la diferencia es de micras
+        self.assertLess(abs(r2.lat - 12.4) * 111000, 1e-3)
+        self.assertLess(abs(r2.lon + 72.6) * 111000, 1e-3)
+
+    def test_epoch_from_julian(self):
+        self.assertAlmostEqual(vemos.epoca_desde_juliano("2018018"), 2018 + 17.5 / 365, places=6)
+        self.assertAlmostEqual(vemos.epoca_desde_juliano(2020366), 2020 + 365.5 / 366, places=6)
+        self.assertIsNone(vemos.epoca_desde_juliano("20180"))
+        self.assertIsNone(vemos.epoca_desde_juliano(None))
+        self.assertIsNone(vemos.epoca_desde_juliano("2018400"))
+
+    def test_epoch_from_date_text(self):
+        self.assertAlmostEqual(vemos.epoca_desde_texto_fecha("01/18/2018 10:00:00"), 2018 + 17.5 / 365, places=6)
+        self.assertAlmostEqual(vemos.epoca_desde_texto_fecha("2018-01-18"), 2018 + 17.5 / 365, places=6)
+        self.assertIsNone(vemos.epoca_desde_texto_fecha("sin fecha"))
+        self.assertIsNone(vemos.epoca_desde_texto_fecha(""))
+
+    def test_epoch_from_row_prefers_julian_then_dates(self):
+        self.assertAlmostEqual(vemos.epoca_de_fila({"julian_date_local": "2018018", "survey_time_gmt": "2020-01-01"}),
+                               2018 + 17.5 / 365, places=6)
+        self.assertAlmostEqual(vemos.epoca_de_fila({"survey_time_gmt": "2020-01-01"}), 2020 + 0.5 / 366, places=6)
+        self.assertIsNone(vemos.epoca_de_fila({}))
+
+    def test_vigencia(self):
+        self.assertFalse(vemos.fuera_de_vigencia("VEMOS2022", 2020.0))
+        self.assertTrue(vemos.fuera_de_vigencia("VEMOS2022", 2024.5))
+        self.assertTrue(vemos.fuera_de_vigencia("VEMOS2017", 2012.0))
+        self.assertFalse(vemos.fuera_de_vigencia("VEMOS2017", 2017.5, margen=0.5))
+
+    def test_catalogo_de_modelos(self):
+        self.assertEqual(vemos.ORDEN_MODELOS, ["VEMOS2022", "VEMOS2017", "VEMOS2015", "VEMOS2009"])
+        for k in vemos.ORDEN_MODELOS:
+            self.assertTrue(vemos.url_modelo(k).startswith("https://www.sirgas.org/"))
+            self.assertLess(vemos.MODELOS[k]["t_ini"], vemos.MODELOS[k]["t_fin"])
+
+    def test_texto_cobertura(self):
+        g = vemos.parse_vemos_text(_VEMOS2017_MUESTRA)
+        self.assertEqual(vemos.texto_cobertura(g), "31°N a 32°N, 110°W a 108°W")
+        g2 = vemos.parse_vemos_text(_VEMOS2015_MUESTRA)
+        self.assertEqual(vemos.texto_cobertura(g2), "14°S a 13°S, 73°W a 71°W")
+
+
+
+class TestVemosIncluidos(unittest.TestCase):
+    """Los cuatro TXT originales de SIRGAS que viajan dentro del plugin."""
+
+    DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vemos_data")
+
+    def _leer(self, clave):
+        return vemos.leer_vemos(os.path.join(self.DIR, vemos.MODELOS[clave]["archivo"]))
+
+    def test_los_cuatro_modelos_estan_y_se_leen(self):
+        esperado = {"VEMOS2022": (1716, 13.0), "VEMOS2017": (2233, 32.0),
+                    "VEMOS2015": (2268, 32.0), "VEMOS2009": (1981, 20.0)}
+        for clave in vemos.ORDEN_MODELOS:
+            g = self._leer(clave)
+            n, lat_max = esperado[clave]
+            self.assertEqual(len(g), n, clave)
+            self.assertEqual(g.cobertura()[1], lat_max, clave)
+            self.assertEqual(g.cobertura()[0], -55.0, clave)
+            self.assertEqual(g.periodo, (vemos.MODELOS[clave]["t_ini"], vemos.MODELOS[clave]["t_fin"]), clave)
+
+    def test_orden_de_columnas_de_vemos2015_coincide_con_los_otros_modelos(self):
+        # La cabecera de VEMOS2015 rotula mal las columnas: se lee por posición
+        # y las velocidades deben parecerse a las de VEMOS2017 en los mismos nodos
+        # (unos 1-3 mm/a de diferencia; con N-S y W-E cambiados serían ~12 mm/a).
+        g15, g17 = self._leer("VEMOS2015"), self._leer("VEMOS2017")
+        dif = [abs(n - g17.nodos[k][0]) + abs(e - g17.nodos[k][1])
+               for k, (n, e) in g15.nodos.items() if k in g17.nodos]
+        self.assertGreater(len(dif), 2000)
+        self.assertLess(sum(dif) / len(dif), 0.006)
+
+    def test_cambio_de_epoca_en_colombia_con_el_modelo_incluido(self):
+        g = self._leer("VEMOS2022")
+        r = vemos.cambiar_epoca(g, 4.6, -74.1, 2600.0, 2020.0, 2018.0)
+        self.assertIsNotNone(r)
+        self.assertTrue(0.02 < r.desplazamiento_m < 0.06)  # ~1.5-2 cm/a durante 2 años
+        # Fuera de la grilla (Texas) no hay corrección
+        self.assertIsNone(vemos.cambiar_epoca(g, 31.0, -100.0, 0.0, 2020.0, 2018.0))
 
 
 if __name__ == "__main__":

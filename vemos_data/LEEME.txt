@@ -1,0 +1,20 @@
+Modelos de velocidades VEMOS incluidos en GNSSeismic (v2.75.0)
+================================================================
+
+Archivos originales, sin modificar, tal como los publica el Centro de Análisis
+SIRGAS del DGFI-TUM (https://www.sirgas.org). Los usa la corrección de época
+opcional de "Importar datos de campo". Cada archivo conserva su cabecera con la
+cita bibliográfica del modelo; si usas estos modelos, cita a los autores.
+
+  VEMOS2022.TXT  ITRF2020       2017.1 - 2022.0   Sánchez, Drewes, Kehm, Seitz (2022)
+  VEMOS2017.TXT  IGS14/ITRF2014 2014.0 - 2017.1   Drewes, Sánchez (2020)
+  VEMOS2015.TXT  IGb08/ITRF2008 2010.2 - 2015.2   Sánchez, Drewes (2016)
+  VEMOS2009.TXT  ITRF2005       2000.0 - 2009.6   Drewes, Heidbach (2012)
+
+Columnas: latitud, longitud (grados), velocidad Sur-Norte y Oeste-Este (m/a) y,
+en VEMOS2022 y VEMOS2017, sus incertidumbres. VEMOS2015 rotula mal el orden de
+las columnas en su cabecera; el plugin las lee por posición (latitud, longitud,
+N-S, W-E), lo que se comprobó comparando sus nodos con los de los otros modelos.
+
+Si borras esta carpeta, el plugin descarga cada modelo de sirgas.org la primera
+vez que se usa, o puedes cargarlo a mano con el botón "Cargar archivo...".

@@ -52,6 +52,7 @@ se re-renderizan -- ver `_render_counts_label`/`_render_preplot_label`).
 """
 
 import os
+import contextlib
 import csv
 import functools
 import inspect
@@ -124,6 +125,7 @@ from . import preplot_generator
 from . import export_writers
 from . import geoid_utils
 from . import ggf_reader
+from . import vemos
 from . import qld_reader
 from . import i18n
 
@@ -1176,7 +1178,16 @@ PREVIEW_COL_DIST2D = 64
 PREVIEW_COL_ESTADO = 65
 PREVIEW_COL_ARCHIVO = 66
 PREVIEW_COL_SURVEYOR = 67  # columna extra (v2.62.11): Surveyor que se subirá (Unit ID en SourceLink, o el escrito junto al archivo)
-PREVIEW_N_COLS = 68
+# Columnas de la corrección de época (v2.74.0), ocultas mientras la
+# corrección no esté activa; se muestran justo a la derecha de Este/Norte
+# (sólo el orden VISUAL cambia). Este/Norte (PREVIEW_COL_ESTE/_NORTE) y
+# lat/lon son los que se suben: con la corrección activa ya llevan la
+# corrección; estas cuatro columnas muestran lo que había SIN corregir.
+PREVIEW_COL_ESTE_SIN_EPOCA = 68
+PREVIEW_COL_NORTE_SIN_EPOCA = 69
+PREVIEW_COL_DELTA_EPOCA = 70
+PREVIEW_COL_EPOCA_OBS = 71
+PREVIEW_N_COLS = 72
 
 # Columnas de la tabla de previsualización de "Importar preplot externo"
 # (`_build_tab_preplot`, grupo agregado en la v2.6.0): puntos leídos de
@@ -1589,6 +1600,10 @@ class GNSSeismicController(QWidget):
         self._import_preview = []  # list[dict], puntos parseados del .dc aún no subidos (ver previsualizar_dc())
         self._import_geoid_applied = False
         self._import_geoid_file_name = None
+        # Corrección de época por modelo de velocidades VEMOS (v2.74.0, opcional)
+        self._import_epoca_aplicada = False  # True si la última previsualización llevó las coordenadas a otra época
+        self._vemos_grids = {}  # clave de modelo -> vemos.VemosGrid ya leído
+        self._vemos_ult_n_fuera = None  # para no repetir el aviso de "fuera de cobertura" con cada refresco
         self._last_import_preview_summary = None  # (n, matched, within, had_preplot) para re-renderizar al cambiar idioma
         self._preview_filtro_ids = None  # set de índices de `_import_preview` que cumplen la consulta actual, o None si no hay filtro activo (ver `_ejecutar_filtro_preview`)
 
@@ -1741,6 +1756,7 @@ class GNSSeismicController(QWidget):
 
 
         self._retranslate_tabla_preview()
+        self._retranslate_acordeon_epoca()
 
         if hasattr(self, "btn_subir_dc"):
             self._actualizar_boton_subir()
@@ -4845,6 +4861,10 @@ class GNSSeismicController(QWidget):
         btn_refrescar_comp.clicked.connect(self.actualizar_comparacion_preview)
         v_comp.addWidget(btn_refrescar_comp)
         self.acc_preplot.set_contenido(cont_comp)
+
+        # -- Acordeón: Corrección de época con modelos de velocidades VEMOS
+        #    (opcional, v2.74.0). Cerrado por defecto.
+        self._construir_acordeon_epoca()
         # El resumen "N puntos / emparejados / dentro de tolerancia" se
         # muestra siempre (fuera del acordeón), debajo de los bloques.
         self.lbl_preview_resumen = QLabel("")
@@ -5089,7 +5109,7 @@ class GNSSeismicController(QWidget):
         # -- Armado -----------------------------------------------------
         for g in (grp_origen, grp_filtrado, grp_finalizar, self.grp_correccion_base):
             g.setSizePolicy(SIZE_POLICY_IGNORED, g.sizePolicy().verticalPolicy())
-        for a in (self.acc_preplot, self.acc_bulk):
+        for a in (self.acc_preplot, self.acc_epoca, self.acc_bulk):
             a.setSizePolicy(SIZE_POLICY_IGNORED, a.sizePolicy().verticalPolicy())
 
         # Dos columnas de igual ancho. Izquierda: "1. Archivo de Origen"
@@ -5103,6 +5123,7 @@ class GNSSeismicController(QWidget):
         col_izq.setSpacing(6)
         col_izq.addWidget(grp_origen, 1)
         col_izq.addWidget(self.acc_preplot)
+        col_izq.addWidget(self.acc_epoca)
         col_izq.addWidget(self.acc_bulk)
         col_izq.addWidget(self.lbl_preview_resumen)
         col_izq.addWidget(self.grp_correccion_base)
@@ -5141,6 +5162,17 @@ class GNSSeismicController(QWidget):
             _hdr_preview.visualIndex(PREVIEW_COL_COMENTARIO),
             _hdr_preview.visualIndex(PREVIEW_COL_DESCRIPTOR) + 1,
         )
+        # Corrección de época (v2.74.0): las 4 columnas nuevas se muestran
+        # justo a la derecha de "Local Northing" y quedan ocultas mientras
+        # la corrección no esté activa.
+        for _i, _col in enumerate((
+            PREVIEW_COL_ESTE_SIN_EPOCA, PREVIEW_COL_NORTE_SIN_EPOCA,
+            PREVIEW_COL_DELTA_EPOCA, PREVIEW_COL_EPOCA_OBS,
+        )):
+            _hdr_preview.moveSection(
+                _hdr_preview.visualIndex(_col), _hdr_preview.visualIndex(PREVIEW_COL_NORTE) + 1 + _i,
+            )
+            self.tbl_import_preview.setColumnHidden(_col, True)
         # Recalcula "Alt. WGS84 (m)"/"Elevación ortométrica" en vivo al
         # editar la celda "Altura de antena" -- ver
         # `_on_preview_item_changed`, pedido explícito del usuario.
@@ -5148,6 +5180,308 @@ class GNSSeismicController(QWidget):
         v.addWidget(self.tbl_import_preview, 1)
 
         return w
+
+    # -- Corrección de época con modelos de velocidades VEMOS (v2.74.0) ---
+    # Opcional: con la casilla activada, `previsualizar_dc()` lleva lat/lon de
+    # cada punto de su época de observación a la época destino (por defecto
+    # 2018.0, la de MAGNA-SIRGAS) sumando la velocidad interpolada del modelo
+    # elegido (ver `vemos.py`). Como `f["lat"]`/`f["lon"]` pasan a ser los
+    # corregidos, TODO lo que sigue (tabla, mapa, comparación con PREPLOT y la
+    # subida a POSTPLOT) usa la coordenada corregida; los valores originales
+    # quedan en `lat_sin_epoca`/`lon_sin_epoca` sólo para mostrarlos en las
+    # columnas "sin corrección" de la previsualización.
+
+    def _construir_acordeon_epoca(self):
+        self.acc_epoca = AcordeonSeccion()
+        cont = QWidget()
+        v_ep = QVBoxLayout(cont)
+        v_ep.setContentsMargins(0, 0, 0, 0)
+        v_ep.setSpacing(6)
+
+        fila_chk = QHBoxLayout()
+        self.chk_epoca_aplicar = self._reg(QCheckBox(), "chk_epoca_aplicar")
+        self.chk_epoca_aplicar.setChecked(False)
+        fila_chk.addWidget(self.chk_epoca_aplicar, 1)
+        fila_chk.addWidget(self._crear_icono_info("epoca_info"))
+        v_ep.addLayout(fila_chk)
+
+        fila_mod = QHBoxLayout()
+        fila_mod.addWidget(self._reg(QLabel(), "lbl_epoca_modelo"))
+        self.cb_epoca_modelo = QComboBox()
+        for k in vemos.ORDEN_MODELOS:
+            m = vemos.MODELOS[k]
+            self.cb_epoca_modelo.addItem(f"{k} · {m['marco']} · {m['t_ini']:.1f}-{m['t_fin']:.1f}", k)
+        self.cb_epoca_modelo.setSizeAdjustPolicy(
+            _valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy")
+        )
+        self.cb_epoca_modelo.setMinimumContentsLength(14)
+        fila_mod.addWidget(self.cb_epoca_modelo, 1)
+        self.btn_epoca_cargar = self._reg(QPushButton(), "btn_epoca_cargar")
+        self._reg(self.btn_epoca_cargar, "tip_btn_epoca_cargar", kind="tooltip")
+        self.btn_epoca_cargar.clicked.connect(self._cargar_vemos_desde_archivo)
+        fila_mod.addWidget(self.btn_epoca_cargar)
+        v_ep.addLayout(fila_mod)
+
+        fila_ep = QHBoxLayout()
+        fila_ep.addWidget(self._reg(QLabel(), "lbl_epoca_destino"))
+        self.spn_epoca_destino = QDoubleSpinBox()
+        self.spn_epoca_destino.setDecimals(3)
+        self.spn_epoca_destino.setRange(1990.0, 2100.0)
+        self.spn_epoca_destino.setSingleStep(0.1)
+        self.spn_epoca_destino.setValue(vemos.EPOCA_MAGNA_SIRGAS)
+        self._reg(self.spn_epoca_destino, "tip_epoca_destino", kind="tooltip")
+        fila_ep.addWidget(self.spn_epoca_destino)
+        fila_ep.addStretch(1)
+        v_ep.addLayout(fila_ep)
+
+        self.chk_epoca_fecha_archivo = self._reg(QCheckBox(), "chk_epoca_fecha_archivo")
+        self.chk_epoca_fecha_archivo.setChecked(True)
+        self._reg(self.chk_epoca_fecha_archivo, "tip_epoca_fecha_archivo", kind="tooltip")
+        v_ep.addWidget(self.chk_epoca_fecha_archivo)
+        fila_man = QHBoxLayout()
+        fila_man.addWidget(self._reg(QLabel(), "lbl_epoca_manual"))
+        self.spn_epoca_manual = QDoubleSpinBox()
+        self.spn_epoca_manual.setDecimals(3)
+        self.spn_epoca_manual.setRange(1990.0, 2100.0)
+        self.spn_epoca_manual.setSingleStep(0.1)
+        self.spn_epoca_manual.setValue(round(vemos.epoca_de_fecha(datetime.now()), 3))
+        self._reg(self.spn_epoca_manual, "tip_epoca_manual", kind="tooltip")
+        fila_man.addWidget(self.spn_epoca_manual)
+        fila_man.addStretch(1)
+        v_ep.addLayout(fila_man)
+
+        self.lbl_epoca_estado = QLabel("")
+        self.lbl_epoca_estado.setWordWrap(True)
+        self.lbl_epoca_estado.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_ep.addWidget(self.lbl_epoca_estado)
+        self.lbl_epoca_aviso = self._reg(QLabel(), "epoca_aviso_cobertura")
+        self.lbl_epoca_aviso.setWordWrap(True)
+        self.lbl_epoca_aviso.setStyleSheet(ESTILO_ROTULO_TENUE)
+        v_ep.addWidget(self.lbl_epoca_aviso)
+
+        self.acc_epoca.set_contenido(cont)
+
+        self.chk_epoca_aplicar.toggled.connect(self._on_epoca_cambio)
+        self.cb_epoca_modelo.currentIndexChanged.connect(self._on_epoca_cambio)
+        self.chk_epoca_fecha_archivo.toggled.connect(self._on_epoca_cambio)
+        self.spn_epoca_destino.editingFinished.connect(self._on_epoca_cambio)
+        self.spn_epoca_manual.editingFinished.connect(self._on_epoca_cambio)
+        self._actualizar_estado_epoca()
+        self._actualizar_resumen_epoca()
+
+    def _retranslate_acordeon_epoca(self):
+        if hasattr(self, "acc_epoca"):
+            self._actualizar_estado_epoca()
+            self._actualizar_resumen_epoca()
+
+    def _actualizar_resumen_epoca(self):
+        """Cabecera del acordeón: "desactivada" o "VEMOS2022 -> 2018.000"."""
+        if not hasattr(self, "acc_epoca") or not hasattr(self, "chk_epoca_aplicar"):
+            return
+        if self.chk_epoca_aplicar.isChecked():
+            texto = self.t("acc_epoca_summary", modelo=self.cb_epoca_modelo.currentData(),
+                           destino=f"{self.spn_epoca_destino.value():.3f}")
+        else:
+            texto = self.t("acc_epoca_off")
+        self.acc_epoca.set_textos(self.t("acc_epoca_title"), texto)
+
+    def _actualizar_estado_epoca(self):
+        """Línea de estado del modelo elegido (cargado/guardado/por descargar)."""
+        if not hasattr(self, "lbl_epoca_estado"):
+            return
+        clave = self.cb_epoca_modelo.currentData()
+        g = self._vemos_grids.get(clave)
+        if g is not None:
+            texto = self.t("epoca_estado_cargado", n=len(g), cob=vemos.texto_cobertura(g),
+                           marco=g.marco or vemos.MODELOS[clave]["marco"])
+        elif self._ruta_vemos_incluido(clave):
+            texto = self.t("epoca_estado_incluido")
+        elif os.path.exists(self._ruta_cache_vemos(clave)):
+            texto = self.t("epoca_estado_guardado")
+        else:
+            texto = self.t("epoca_estado_sin_cargar")
+        self.lbl_epoca_estado.setText(texto)
+
+    def _on_epoca_cambio(self, *_args):
+        """Cambió algún ajuste de la corrección de época: refresca la
+        cabecera/estado y, si ya hay una previsualización (o la corrección
+        estaba activa), la vuelve a armar para que lo que se ve -- y lo que se
+        sube -- corresponda a los ajustes actuales."""
+        self._actualizar_resumen_epoca()
+        self._actualizar_estado_epoca()
+        if self._import_preview and (self.chk_epoca_aplicar.isChecked() or self._import_epoca_aplicada):
+            self.previsualizar_dc(mostrar_aviso=False)
+
+    def _ruta_vemos_incluido(self, clave):
+        """Ruta del TXT del modelo si viene incluido dentro del plugin (carpeta
+        `vemos_data`), o None. Tiene prioridad sobre el caché y la descarga."""
+        ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vemos_data", vemos.MODELOS[clave]["archivo"])
+        return ruta if os.path.isfile(ruta) else None
+
+    def _ruta_cache_vemos(self, clave):
+        try:
+            base = os.path.join(str(QgsApplication.qgisSettingsDirPath()), "gnsseismic_vemos")
+        except Exception:
+            base = os.path.join(os.path.expanduser("~"), ".gnsseismic_vemos")
+        return os.path.join(base, vemos.MODELOS[clave]["archivo"])
+
+    def _descargar_texto_vemos(self, clave):
+        """Descarga el TXT del modelo desde sirgas.org con la red de QGIS (usa
+        el proxy configurado en QGIS) y devuelve su texto (latin-1)."""
+        from qgis.core import QgsBlockingNetworkRequest
+        from qgis.PyQt.QtCore import QUrl
+        from qgis.PyQt.QtNetwork import QNetworkRequest
+        peticion = QNetworkRequest(QUrl(vemos.url_modelo(clave)))
+        bloqueante = QgsBlockingNetworkRequest()
+        codigo = bloqueante.get(peticion)
+        if int(getattr(codigo, "value", codigo)) != 0:
+            raise RuntimeError(bloqueante.errorMessage() or "network error")
+        datos = bytes(bloqueante.reply().content())
+        return datos.decode("latin-1")
+
+    def _guardar_cache_vemos(self, clave, texto):
+        ruta = self._ruta_cache_vemos(clave)
+        # El caché es sólo una comodidad; sin él se vuelve a descargar.
+        with contextlib.suppress(Exception):
+            os.makedirs(os.path.dirname(ruta), exist_ok=True)
+            with open(ruta, "w", encoding="latin-1", newline="") as fh:
+                fh.write(texto)
+
+    def _obtener_grid_vemos(self, clave):
+        """Grilla del modelo `clave`: de memoria, del caché de este equipo o
+        del propio plugin (carpeta vemos_data) o descargándola de sirgas.org. None (con aviso) si no se pudo."""
+        g = self._vemos_grids.get(clave)
+        if g is not None:
+            return g
+        for ruta in (self._ruta_vemos_incluido(clave), self._ruta_cache_vemos(clave)):
+            if g is None and ruta and os.path.exists(ruta):
+                try:
+                    g = vemos.leer_vemos(ruta)
+                except Exception:
+                    g = None
+        if g is None:
+            QApplication.setOverrideCursor(_valor_enum(Qt, "WaitCursor", "CursorShape"))
+            try:
+                texto = self._descargar_texto_vemos(clave)
+                g = vemos.parse_vemos_text(texto)
+                self._guardar_cache_vemos(clave, texto)
+            except Exception as e:
+                QMessageBox.warning(
+                    self, self.t("err_vemos_descarga_title"),
+                    self.t("err_vemos_descarga_body", modelo=clave, error=str(e),
+                           archivo=vemos.MODELOS[clave]["archivo"], url=vemos.url_modelo(clave)),
+                )
+                return None
+            finally:
+                QApplication.restoreOverrideCursor()
+        self._vemos_grids[clave] = g
+        self._actualizar_estado_epoca()
+        return g
+
+    def _cargar_vemos_desde_archivo(self):
+        """Botón "Cargar archivo...": usa un VEMOS*.TXT ya descargado (sin
+        internet) para el modelo elegido y lo guarda en el caché del plugin."""
+        clave = self.cb_epoca_modelo.currentData()
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.t("dlg_vemos_cargar_title", modelo=clave), "", self.t("filter_vemos"),
+        )
+        if not path:
+            return
+        try:
+            g = vemos.leer_vemos(path)
+        except Exception as e:
+            QMessageBox.warning(self, self.t("err_title"), self.t("err_vemos_archivo", error=str(e)))
+            return
+        with contextlib.suppress(Exception):
+            with open(path, "r", encoding="latin-1") as fh:
+                self._guardar_cache_vemos(clave, fh.read())
+        self._vemos_grids[clave] = g
+        self._on_epoca_cambio()
+
+    def _aplicar_epoca_a_filas(self, filas):
+        """Si la corrección de época está activa, lleva lat/lon de cada fila de
+        su época de observación a la época destino con el modelo elegido (ver
+        el comentario de sección). Los puntos fuera de la cobertura del modelo
+        quedan SIN corregir y se avisa: cada modelo VEMOS cubre sólo parte de
+        América Latina y el Caribe, no todo el mundo."""
+        self._import_epoca_aplicada = False
+        if not hasattr(self, "chk_epoca_aplicar") or not self.chk_epoca_aplicar.isChecked() or not filas:
+            self._vemos_ult_n_fuera = None
+            return
+        clave = self.cb_epoca_modelo.currentData()
+        grid = self._obtener_grid_vemos(clave)
+        if grid is None:
+            # Sin modelo no hay corrección: se desactiva para que nadie crea
+            # que lo que ve (y sube) está corregido.
+            self.chk_epoca_aplicar.blockSignals(True)
+            self.chk_epoca_aplicar.setChecked(False)
+            self.chk_epoca_aplicar.blockSignals(False)
+            self._actualizar_resumen_epoca()
+            return
+        t_ref = self.spn_epoca_destino.value()
+        usar_fecha = self.chk_epoca_fecha_archivo.isChecked()
+        t_manual = self.spn_epoca_manual.value()
+        n_ok = n_fuera = n_sin_fecha = n_vigencia = n_parcial = 0
+        desplazamientos = []
+        for f in filas:
+            t_obs = vemos.epoca_de_fila(f) if usar_fecha else None
+            if t_obs is None:
+                t_obs = t_manual
+                if usar_fecha:
+                    n_sin_fecha += 1
+            altura = f.get("altura_wgs84")
+            r = vemos.cambiar_epoca(grid, f["lat"], f["lon"], altura if altura is not None else 0.0, t_obs, t_ref)
+            if r is None:
+                n_fuera += 1
+                f["epoca_corregida"] = False
+                continue
+            f["lat_sin_epoca"], f["lon_sin_epoca"] = f["lat"], f["lon"]
+            f["lat"], f["lon"] = r.lat, r.lon
+            f["epoca_obs"] = t_obs
+            f["epoca_desplaz_m"] = r.desplazamiento_m
+            f["epoca_corregida"] = True
+            n_ok += 1
+            desplazamientos.append(r.desplazamiento_m)
+            if r.n_nodos < 4:
+                n_parcial += 1
+            if vemos.fuera_de_vigencia(clave, t_obs):
+                n_vigencia += 1
+        self._import_epoca_aplicada = True
+        log = self.log_importar.appendPlainText
+        if n_ok:
+            log(self.t("log_epoca_resumen", modelo=clave, ok=n_ok, n=len(filas), destino=f"{t_ref:.3f}",
+                       med=sum(desplazamientos) / len(desplazamientos), max=max(desplazamientos)))
+        if n_sin_fecha:
+            log(self.t("log_epoca_sin_fecha", n=n_sin_fecha, epoca=f"{t_manual:.3f}"))
+        if n_vigencia:
+            m = vemos.MODELOS[clave]
+            log(self.t("log_epoca_vigencia", n=n_vigencia, modelo=clave, ini=f"{m['t_ini']:.1f}", fin=f"{m['t_fin']:.1f}"))
+        if n_parcial:
+            log(self.t("log_epoca_parcial", n=n_parcial))
+        if n_fuera:
+            cob = vemos.texto_cobertura(grid)
+            log(self.t("log_epoca_fuera", n=n_fuera, cob=cob))
+            if n_fuera != self._vemos_ult_n_fuera:
+                QMessageBox.warning(
+                    self, self.t("warn_epoca_fuera_title"),
+                    self.t("warn_epoca_fuera_body", n=n_fuera, total=len(filas), modelo=clave, cob=cob),
+                )
+        self._vemos_ult_n_fuera = n_fuera if n_fuera else None
+
+    def _render_epoca_cells(self, row, fila):
+        """Columnas "sin corrección de época" de la previsualización."""
+        if fila.get("epoca_corregida"):
+            e0, n0 = _transform_xy(
+                fila["lon_sin_epoca"], fila["lat_sin_epoca"], self.crs_wgs84, self._working_crs(), self.project,
+            )
+            textos = (f"{e0:.3f}", f"{n0:.3f}", f"{fila['epoca_desplaz_m']:.3f}", f"{fila['epoca_obs']:.3f}")
+        else:
+            textos = ("-", "-", "-", "-")
+        for col, texto in zip(
+            (PREVIEW_COL_ESTE_SIN_EPOCA, PREVIEW_COL_NORTE_SIN_EPOCA, PREVIEW_COL_DELTA_EPOCA, PREVIEW_COL_EPOCA_OBS),
+            textos,
+        ):
+            self._set_preview_readonly_cell(row, col, texto)
 
     # -- Rediseño v2.63.0: textos dinámicos de acordeones / botones ------
     def _actualizar_resumen_acordeones(self):
@@ -5174,6 +5508,7 @@ class GNSSeismicController(QWidget):
                 valor = f"{self.spn_hi_bulk.value():.3f} m"
                 campo = self.t("opt_bulk_field_hi")
             self.acc_bulk.set_textos(self.t("acc_bulk_title"), f"{campo} = {valor}")
+        self._actualizar_resumen_epoca()
 
     def _actualizar_texto_boton_sql_dev(self):
         key = "btn_sql_dev_hide" if self.btn_sql_dev.isChecked() else "btn_sql_dev_show"
@@ -6374,6 +6709,9 @@ class GNSSeismicController(QWidget):
         # sección, para que ambas reflejen siempre la coordenada ya
         # corregida si el usuario guardó una.
         self._aplicar_correcciones_base_a_filas(filas, aplicar_geoide)
+        # Corrección de época (opcional): después de la corrección de base,
+        # ver `_aplicar_epoca_a_filas`.
+        self._aplicar_epoca_a_filas(filas)
 
         # Pedido del usuario: la previsualización sólo debe mostrar puntos
         # con un levantamiento GNSS real de campo -- identificables porque
@@ -7091,6 +7429,8 @@ class GNSSeismicController(QWidget):
             self.t("col_preplot_match"), self.t("col_delta_x"), self.t("col_delta_y"),
             self.t("col_dist_2d"), self.t("col_status"), self.t("col_file"),
             self.t("col_surveyor"),
+            self.t("col_este_sin_epoca"), self.t("col_norte_sin_epoca"),
+            self.t("col_delta_epoca"), self.t("col_epoca_obs"),
         ]
 
     def _correccion_base_headers(self):
@@ -7230,6 +7570,7 @@ class GNSSeismicController(QWidget):
             este, norte = _transform_xy(fila["lon"], fila["lat"], self.crs_wgs84, self._working_crs(), self.project)
             self._set_preview_readonly_cell(row, PREVIEW_COL_ESTE, f"{este:.3f}")
             self._set_preview_readonly_cell(row, PREVIEW_COL_NORTE, f"{norte:.3f}")
+            self._render_epoca_cells(row, fila)
 
             self._set_preview_readonly_cell(row, PREVIEW_COL_ALTURA, f"{fila['altura_wgs84']:.3f}")
 
@@ -7479,6 +7820,9 @@ class GNSSeismicController(QWidget):
             self._render_preview_match_cells(row, fila)
 
         tbl.blockSignals(False)
+        for _col in (PREVIEW_COL_ESTE_SIN_EPOCA, PREVIEW_COL_NORTE_SIN_EPOCA,
+                     PREVIEW_COL_DELTA_EPOCA, PREVIEW_COL_EPOCA_OBS):
+            tbl.setColumnHidden(_col, not self._import_epoca_aplicada)
         tbl.resizeColumnsToContents()
         # Reaplica el resaltado del filtro/consulta actual (si hay uno):
         # esta función siempre reconstruye la tabla entera desde cero, así

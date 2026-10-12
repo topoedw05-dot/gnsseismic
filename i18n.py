@@ -880,6 +880,138 @@ TR = {
     "bd_card_buscar": {"es": "Edición rápida: Buscar y reemplazar", "en": "Quick edit: Find and replace"},
     "bd_card_mapeo": {"es": "Mapeo de columnas", "en": "Column mapping"},
     "bd_card_salida": {"es": "Formato de salida", "en": "Output format"},
+    # -- Corrección de época con modelos de velocidades VEMOS (v2.74.0) --
+    "acc_epoca_title": {"es": "Corrección de época (VEMOS)", "en": "Epoch correction (VEMOS)"},
+    "acc_epoca_off": {"es": "desactivada", "en": "off"},
+    "acc_epoca_summary": {"es": "{modelo} → época {destino}", "en": "{modelo} → epoch {destino}"},
+    "chk_epoca_aplicar": {
+        "es": "Corregir las coordenadas por época con un modelo de velocidades",
+        "en": "Correct coordinates for epoch with a velocity model",
+    },
+    "epoca_info": {
+        "es": (
+            "Lleva cada punto de su época de observación a la época destino sumando el "
+            "movimiento de la corteza que da el modelo de velocidades VEMOS de SIRGAS "
+            "(interpolado entre los 4 nodos de la grilla de 1° que rodean al punto). "
+            "<br><br>La previsualización muestra las coordenadas planas SIN corregir y las "
+            "corregidas, y a la base de datos sólo suben las corregidas. Si la casilla está "
+            "apagada no se toca nada. "
+            "<br><br><b>Cobertura:</b> la define cada modelo, no es la misma para todos: VEMOS2022 "
+            "cubre sobre todo Sudamérica (hasta 13°N), VEMOS2017 y VEMOS2015 llegan hasta México "
+            "y el Caribe (32°N) y VEMOS2009 hasta Cuba (20°N). Ninguno cubre el mundo entero; los "
+            "puntos fuera de la grilla no se corrigen y el plugin avisa. "
+            "<br><br>Cada modelo está en un marco ITRF distinto y sólo describe el periodo de "
+            "datos que usó; elige el que corresponda al marco y a la fecha de tu levantamiento "
+            "(no incluye saltos de terremotos). No cambia de marco ITRF, sólo de época."
+        ),
+        "en": (
+            "Moves each point from its observation epoch to the target epoch by adding the "
+            "crustal motion given by the SIRGAS VEMOS velocity model (interpolated between the "
+            "4 nodes of the 1° grid around the point). "
+            "<br><br>The preview shows the planar coordinates WITHOUT correction and the "
+            "corrected ones, and only the corrected ones are uploaded to the database. With the "
+            "box off nothing is changed. "
+            "<br><br><b>Coverage:</b> each model defines its own: VEMOS2022 mostly covers South America "
+            "(up to 13°N), VEMOS2017 and VEMOS2015 reach Mexico and the Caribbean (32°N) and "
+            "VEMOS2009 reaches Cuba (20°N). None covers the whole world; points outside the grid "
+            "are not corrected and the plugin warns you. "
+            "<br><br>Each model is in a different ITRF frame and only describes the period of "
+            "data it used; pick the one that matches your survey's frame and date (earthquake "
+            "jumps are not included). It does not change ITRF frame, only epoch."
+        ),
+    },
+    "lbl_epoca_modelo": {"es": "Modelo:", "en": "Model:"},
+    "btn_epoca_cargar": {"es": "Cargar archivo...", "en": "Load file..."},
+    "tip_btn_epoca_cargar": {
+        "es": "Usa un VEMOS*.TXT que ya descargaste de sirgas.org (sin internet) para el modelo elegido.",
+        "en": "Use a VEMOS*.TXT you already downloaded from sirgas.org (no internet needed) for the chosen model.",
+    },
+    "lbl_epoca_destino": {"es": "Época destino:", "en": "Target epoch:"},
+    "tip_epoca_destino": {
+        "es": "Año decimal al que se llevan las coordenadas. MAGNA-SIRGAS (Colombia): 2018.0.",
+        "en": "Decimal year the coordinates are moved to. MAGNA-SIRGAS (Colombia): 2018.0.",
+    },
+    "chk_epoca_fecha_archivo": {
+        "es": "Tomar la época de la fecha de cada punto/archivo",
+        "en": "Take the epoch from each point's/file's date",
+    },
+    "tip_epoca_fecha_archivo": {
+        "es": "Si está marcada, la época de observación sale de la fecha de cada punto o archivo de campo; los que no traen fecha usan la época manual de abajo. Si no, todos usan la época manual.",
+        "en": "If checked, the observation epoch comes from each point's or field file's date; those without a date use the manual epoch below. If not, all use the manual epoch.",
+    },
+    "lbl_epoca_manual": {"es": "Época de observación manual:", "en": "Manual observation epoch:"},
+    "tip_epoca_manual": {
+        "es": "Año decimal de observación para los puntos sin fecha (o para todos si la casilla anterior está desmarcada).",
+        "en": "Decimal observation year for points without a date (or for all if the checkbox above is off).",
+    },
+    "epoca_estado_cargado": {
+        "es": "Modelo cargado: {n} nodos · cobertura {cob} · marco {marco}",
+        "en": "Model loaded: {n} nodes · coverage {cob} · frame {marco}",
+    },
+    "epoca_estado_incluido": {
+        "es": "Modelo incluido en el plugin (se carga al previsualizar, sin internet).",
+        "en": "Model bundled with the plugin (loaded when you preview, no internet needed).",
+    },
+    "epoca_estado_guardado": {
+        "es": "Modelo guardado en este equipo (se carga al previsualizar).",
+        "en": "Model saved on this computer (loaded when you preview).",
+    },
+    "epoca_estado_sin_cargar": {
+        "es": "Modelo sin cargar: se descargará de sirgas.org al previsualizar (o usa \"Cargar archivo...\").",
+        "en": "Model not loaded: it will be downloaded from sirgas.org when you preview (or use \"Load file...\").",
+    },
+    "epoca_aviso_cobertura": {
+        "es": "La cobertura depende del modelo (VEMOS2022: sobre todo Sudamérica). Fuera de ella los puntos no se corrigen.",
+        "en": "Coverage depends on the model (VEMOS2022: mostly South America). Points outside it are not corrected.",
+    },
+    "err_vemos_descarga_title": {"es": "No se pudo obtener el modelo VEMOS", "en": "Could not get the VEMOS model"},
+    "err_vemos_descarga_body": {
+        "es": "No se pudo descargar {modelo} ({error}). La corrección de época se desactivó.\n\nDescarga {archivo} desde {url} y cárgalo con \"Cargar archivo...\".",
+        "en": "Could not download {modelo} ({error}). Epoch correction was turned off.\n\nDownload {archivo} from {url} and load it with \"Load file...\".",
+    },
+    "err_vemos_archivo": {
+        "es": "El archivo no parece un modelo VEMOS válido ({error}).",
+        "en": "The file does not look like a valid VEMOS model ({error}).",
+    },
+    "dlg_vemos_cargar_title": {"es": "Cargar modelo {modelo} (.TXT)", "en": "Load {modelo} model (.TXT)"},
+    "filter_vemos": {"es": "Modelo VEMOS (*.txt *.TXT);;Todos los archivos (*)", "en": "VEMOS model (*.txt *.TXT);;All files (*)"},
+    "warn_epoca_fuera_title": {"es": "Puntos fuera de la cobertura del modelo", "en": "Points outside the model's coverage"},
+    "warn_epoca_fuera_body": {
+        "es": (
+            "{n} de {total} puntos están fuera de la cobertura de {modelo} ({cob}) y se dejaron SIN corregir.\n\n"
+            "VEMOS cubre parte de América Latina y el Caribe, y cada modelo tiene su propia zona (VEMOS2022 llega hasta 13°N); no cubre todo el mundo. "
+            "Prueba con otro modelo, o desactiva la corrección, o usa solo los puntos de esa zona."
+        ),
+        "en": (
+            "{n} of {total} points are outside the coverage of {modelo} ({cob}) and were left UNCORRECTED.\n\n"
+            "VEMOS covers part of Latin America and the Caribbean, and each model has its own area (VEMOS2022 reaches 13°N); it does not cover the whole world. "
+            "Try another model, turn the correction off, or use only points inside that area."
+        ),
+    },
+    "log_epoca_resumen": {
+        "es": "Corrección de época {modelo}: {ok} de {n} puntos llevados a la época {destino}; desplazamiento medio {med:.3f} m (máximo {max:.3f} m).",
+        "en": "Epoch correction {modelo}: {ok} of {n} points moved to epoch {destino}; mean shift {med:.3f} m (max {max:.3f} m).",
+    },
+    "log_epoca_sin_fecha": {
+        "es": "Corrección de época: {n} puntos sin fecha usaron la época manual {epoca}.",
+        "en": "Epoch correction: {n} points without a date used the manual epoch {epoca}.",
+    },
+    "log_epoca_vigencia": {
+        "es": "Corrección de época: {n} puntos con época de observación fuera de la vigencia de {modelo} ({ini}-{fin}); la corrección es una extrapolación y puede ser poco confiable.",
+        "en": "Epoch correction: {n} points have an observation epoch outside {modelo}'s validity ({ini}-{fin}); the correction is an extrapolation and may be unreliable.",
+    },
+    "log_epoca_parcial": {
+        "es": "Corrección de época: {n} puntos se corrigieron con menos de 4 nodos vecinos (borde de la cobertura).",
+        "en": "Epoch correction: {n} points were corrected with fewer than 4 neighbouring nodes (edge of the coverage).",
+    },
+    "log_epoca_fuera": {
+        "es": "Corrección de época: {n} puntos fuera de la cobertura del modelo ({cob}) quedaron SIN corregir.",
+        "en": "Epoch correction: {n} points outside the model's coverage ({cob}) were left UNCORRECTED.",
+    },
+    "col_este_sin_epoca": {"es": "Este sin corrección de época (m)", "en": "Easting without epoch correction (m)"},
+    "col_norte_sin_epoca": {"es": "Norte sin corrección de época (m)", "en": "Northing without epoch correction (m)"},
+    "col_delta_epoca": {"es": "Desplazamiento por época (m)", "en": "Epoch shift (m)"},
+    "col_epoca_obs": {"es": "Época de observación", "en": "Observation epoch"},
     "bd_acc_exportar": {"es": "Exportar consulta a", "en": "Export query to"},
     "tip_btn_agregar_condicion_consulta": {
         "es": "Arma una condición con la columna/condición/valor elegidos y la agrega al filtro (WHERE) de la consulta, uniéndola con Y/O si ya había una. Después pulsa Ejecutar.",

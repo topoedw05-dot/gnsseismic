@@ -100,6 +100,21 @@ también la altura ortométrica (`Local_Height = WGS84_Height − N`). Al
 confirmar, los puntos se insertan en `POSTPLOT` y se crea una capa de
 puntos en el proyecto de QGIS, simbolizada por tipo.
 
+**Corrección de época opcional (VEMOS).** La sección expandible
+"Corrección de época (VEMOS)" (desactivada por defecto) lleva las
+coordenadas de cada punto, RTK o RTX/PPP, de su época de observación a
+una época destino (2018.000 por defecto, MAGNA-SIRGAS) con los modelos de
+velocidades de SIRGAS VEMOS2022, VEMOS2017, VEMOS2015 o VEMOS2009 (lista
+desplegable). Interpola con los nodos vecinos por inverso de la distancia
+y aplica X(t0) = X(t) + V·(t0 − t). La previsualización muestra las
+coordenadas planas sin y con corrección y sólo se sube la corregida. Los
+cuatro modelos vienen incluidos en la carpeta `vemos_data/` (funciona sin
+internet; si la borras, se descargan de sirgas.org o se cargan desde un TXT
+con "Cargar archivo..."). La cobertura depende del modelo: VEMOS2022 cubre
+sobre todo Sudamérica (hasta 13°N), VEMOS2017 y VEMOS2015 llegan hasta 32°N
+y VEMOS2009 hasta 20°N; los puntos fuera de la zona no se corrigen y se
+avisa. Sólo cambia la época, no el marco de referencia.
+
 ### 3. Preplot Sísmico
 
 Genera puntos de diseño directamente desde el plugin, sin CSV externo,
@@ -202,6 +217,8 @@ compatibilidad con el software de origen.
   lógica de las cuatro secciones) y `_SectionWindow` (la ventana no modal
   que envuelve cada sección); integración con capas/CRS/ráster de QGIS.
   Enums escopados de Qt6 + fallback PyQt5.
+- `vemos_data/` — los cuatro TXT originales de VEMOS (SIRGAS/DGFI-TUM) y un `LEEME.txt`.
+- `vemos.py` — modelos de velocidades VEMOS: lectura de las grillas, interpolación y cambio de época (sin dependencias de QGIS).
 - `i18n.py` — diccionario de traducciones ES/EN y la función `t()` que las
   aplica; sin dependencias de QGIS.
 - `dc_parser.py` — lector del formato Trimble `.dc`/`.dsc`.
