@@ -18,6 +18,7 @@ import unittest
 import db_schema
 import csv_matcher
 import vemos
+import velar_ar
 from dc_parser import (
     parse_dc_text, parse_line, receiver_arp_offset_m, receiver_arp_offset_known,
     resolve_receiver_arp_offset, receiver_arp_offset_known_for_file, _extract_e2nm,
@@ -3807,6 +3808,110 @@ class TestVemos(unittest.TestCase):
         g2 = vemos.parse_vemos_text(_VEMOS2015_MUESTRA)
         self.assertEqual(vemos.texto_cobertura(g2), "14°S a 13°S, 73°W a 71°W")
 
+
+
+class TestVelAr(unittest.TestCase):
+    """VEL-Ar v2.0 (IGN Argentina) con las grillas incluidas. Los valores de
+    referencia salen del programa oficial `velar` (IGN, versión Linux) ejecutado
+    sobre las mismas entradas; la reproducción debe coincidir a ~1-2 cm."""
+
+    # (lat, lon, h), época inicial, época final, (lat, lon) oficial, (lat, lon) P07 oficial o None
+    REF = [
+        ((-38.938897, -57.209418, 1077.071), 2021.641, 2009.004, (-38.93889831812029, -57.209417580642345), None),
+        ((-30.144281, -68.654468, 627.112), 2012.4, 2020.0, (-30.144280281051334, -68.65446863104405), None),
+        ((-39.398486, -55.516427, 3207.902), 2015.346, 2025.667, (-39.39848501776394, -55.51642726044197), None),
+        ((-32.897868, -64.08171, 98.131), 2021.439, 2010.557, (-32.89786900559213, -64.081709548907), None),
+        ((-37.895041, -55.834051, 2418.117), 2018.0, 2010.1, (-37.89504180870765, -55.834050646671365), None),
+        ((-52.743605, -66.639036, 199.195), 2010.5, 2018.0, (-52.74360423692969, -66.6390357658553), None),
+        ((-45.339399, -71.222798, 65.505), 2015.429, 2025.733, (-45.339398096372534, -71.22279812012768), None),
+        ((-46.38788, -58.166694, 423.349), 2020.001, 2006.632,
+         (-46.38788132998439, -58.166693613226585), (-46.38788135323263, -58.166693583576276)),
+        ((-46.571053, -56.527439, 1419.289), 2021.857, 2006.632,
+         (-46.57105452320685, -56.527438547572864), (-46.57105454545441, -56.527438517164214)),
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        carpeta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "velar_data")
+        cls.modelo = velar_ar.ModeloVelAr.desde_carpeta(carpeta)
+
+    @staticmethod
+    def _dist_m(lat1, lon1, lat2, lon2):
+        dn = (lat2 - lat1) * 111132.0
+        de = (lon2 - lon1) * 111320.0 * math.cos(math.radians(lat1))
+        return math.hypot(dn, de)
+
+    def test_modelo_cargado(self):
+        self.assertGreater(len(self.modelo), 1000)
+        cob = velar_ar.texto_cobertura(self.modelo)
+        self.assertIn("S", cob)
+        self.assertIn("W", cob)
+
+    def test_coincide_con_el_programa_oficial(self):
+        for (lat, lon, h), ti, tf, oficial, p07 in self.REF:
+            r = velar_ar.cambiar_epoca(self.modelo, lat, lon, h, ti, tf)
+            self.assertIsNotNone(r, (lat, lon))
+            self.assertLess(self._dist_m(r.lat, r.lon, *oficial), 0.02, (lat, lon, ti, tf))
+            if p07 is not None:
+                self.assertIsNotNone(r.lat_p07)
+                self.assertLess(self._dist_m(r.lat_p07, r.lon_p07, *p07), 0.02, (lat, lon, ti, tf))
+            else:
+                self.assertIsNone(r.lat_p07)
+
+    def test_ejemplo_del_manual(self):
+        # Manual VEL-Ar v2.0: 2015.180 -> 2006.632, desplazamiento total N -0.0272 m, E 0.3322 m.
+        r = velar_ar.cambiar_epoca(self.modelo, -33.97594582, -69.06060325, 50.351, 2015.180, 2006.632)
+        self.assertIsNotNone(r)
+        self.assertLess(self._dist_m(r.lat, r.lon, -33.97594606504391, -69.06059965490816), 0.02)
+        self.assertLess(self._dist_m(r.lat_p07, r.lon_p07, -33.97594609609877, -69.06059964069073), 0.02)
+        self.assertAlmostEqual(r.desplazamiento_m, math.hypot(-0.0271809640557927, 0.3322279995126379), delta=0.02)
+
+    def test_misma_epoca_no_mueve(self):
+        r = velar_ar.cambiar_epoca(self.modelo, -33.5, -66.2, 500.0, 2020.0, 2020.0)
+        self.assertIsNotNone(r)
+        self.assertLess(self._dist_m(-33.5, -66.2, r.lat, r.lon), 1e-4)
+        self.assertAlmostEqual(r.desplazamiento_m, 0.0, places=6)
+
+    def test_entrada_posgar07_y_salida_posgar07_coinciden(self):
+        # ti = tf = 2006.632: el punto de entrada ya está en POSGAR07 -> sale igual.
+        r = velar_ar.cambiar_epoca(self.modelo, -33.5, -66.2, 500.0, 2006.632, 2006.632)
+        self.assertIsNotNone(r)
+        self.assertLess(self._dist_m(-33.5, -66.2, r.lat_p07, r.lon_p07), 1e-3)
+
+    def test_ida_y_vuelta(self):
+        a = velar_ar.cambiar_epoca(self.modelo, -34.6, -64.9, 300.0, 2019.5, 2012.0)
+        b = velar_ar.cambiar_epoca(self.modelo, a.lat, a.lon, a.h, 2012.0, 2019.5)
+        self.assertLess(self._dist_m(-34.6, -64.9, b.lat, b.lon), 0.01)
+
+    def test_terremoto_mueve_en_la_zona_pero_no_lejos(self):
+        # Mendoza (zona Maule): cruzar 2010.159 agrega decímetros.
+        cerca = velar_ar.cambiar_epoca(self.modelo, -33.0, -68.8, 800.0, 2009.0, 2011.0)
+        lejos = velar_ar.cambiar_epoca(self.modelo, -50.0, -69.0, 100.0, 2009.0, 2011.0)
+        self.assertGreater(cerca.desplazamiento_m, 0.10)
+        self.assertLess(lejos.desplazamiento_m, 0.10)
+
+    def test_fuera_de_cobertura(self):
+        self.assertIsNone(velar_ar.cambiar_epoca(self.modelo, 4.6, -74.1, 2600.0, 2020.0, 2006.632))  # Bogotá
+        self.assertFalse(velar_ar.esta_en_cobertura(self.modelo, 4.6, -74.1))
+        self.assertTrue(velar_ar.esta_en_cobertura(self.modelo, -34.6, -58.4))
+
+    def test_altura_no_cambia_en_posgar07b(self):
+        r = velar_ar.cambiar_epoca(self.modelo, -34.6, -58.4, 25.0, 2022.0, 2015.0)
+        self.assertAlmostEqual(r.h, 25.0, delta=1e-3)
+
+
+class TestZonaSismicaMauleIllapel(unittest.TestCase):
+    def test_en_zona_y_cruzando_terremoto(self):
+        self.assertTrue(vemos.zona_sismica_maule_illapel(-33.0, -68.8, 2012.0, 2018.0))
+        self.assertTrue(vemos.zona_sismica_maule_illapel(-33.0, -68.8, 2009.0, 2018.0))
+
+    def test_sin_cruzar_terremoto(self):
+        self.assertFalse(vemos.zona_sismica_maule_illapel(-33.0, -68.8, 2016.0, 2018.0))
+        self.assertFalse(vemos.zona_sismica_maule_illapel(-33.0, -68.8, 2008.0, 2009.0))
+
+    def test_fuera_de_zona(self):
+        self.assertFalse(vemos.zona_sismica_maule_illapel(4.6, -74.1, 2024.5, 2018.0))
+        self.assertFalse(vemos.zona_sismica_maule_illapel(-50.0, -69.0, 2024.5, 2006.632))
 
 
 class TestVemosIncluidos(unittest.TestCase):

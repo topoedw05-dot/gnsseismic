@@ -3,12 +3,14 @@
 Módulo puro (sin Qt/QGIS), con pruebas unitarias en `test_gnsseismic.py`.
 
 Los modelos VEMOS (Velocity Model for SIRGAS, DGFI-TUM) son grillas de 1° x 1°
-con la velocidad horizontal media de la superficie terrestre para América
-Latina y el Caribe (México, Centroamérica, el Caribe y Sudamérica -- NO sólo
-Sudamérica, y tampoco el resto del mundo). Cada nodo trae las componentes
-sur-norte (VSN) y oeste-este (VWE) en m/año, en el marco de referencia del
-modelo. El archivo de texto no es un rectángulo completo: faltan nodos, así
-que la cobertura real se calcula de los propios datos (`VemosGrid.cobertura`).
+con la velocidad horizontal media de la superficie terrestre para parte de
+América Latina y el Caribe. La cobertura depende del modelo: VEMOS2022 cubre
+sobre todo Sudamérica (55°S a 13°N, 86°W a 35°W), VEMOS2017 y VEMOS2015 llegan
+hasta 32°N (México y el Caribe) y VEMOS2009 hasta 20°N. Ninguno cubre el resto
+del mundo. Cada nodo trae las componentes sur-norte (VSN) y oeste-este (VWE) en
+m/año, en el marco de referencia del modelo. El archivo de texto no es un
+rectángulo completo: faltan nodos, así que la cobertura real se calcula de los
+propios datos (`VemosGrid.cobertura`).
 
 Cálculo (ver también la documentación del proyecto):
 
@@ -335,6 +337,25 @@ def epoca_de_fila(fila: dict) -> Optional[float]:
         if e is not None:
             return e
     return None
+
+
+# Zona afectada por los terremotos de Maule (2010.159) e Illapel (2015.710):
+# allí el movimiento no es lineal y un modelo de velocidades constantes como
+# VEMOS no describe la época (en Argentina corresponde usar VEL-Ar).
+T_MAULE = 2010.159
+T_ILLAPEL = 2015.710
+ZONA_MAULE_ILLAPEL = (-42.0, -27.0, -75.0, -63.0)  # lat_min, lat_max, lon_min, lon_max
+
+
+def zona_sismica_maule_illapel(lat: float, lon: float, t_obs: float, t_ref: float) -> bool:
+    """True si el punto está en la zona de los terremotos de Maule/Illapel y el
+    intervalo [t_obs, t_ref] cruza alguno de los dos eventos (con VEMOS el
+    resultado no es confiable: ver `velar_ar`)."""
+    la0, la1, lo0, lo1 = ZONA_MAULE_ILLAPEL
+    if not (la0 <= lat <= la1 and lo0 <= lon <= lo1):
+        return False
+    a, b = min(t_obs, t_ref), max(t_obs, t_ref)
+    return any(a < t <= b for t in (T_MAULE, T_ILLAPEL))
 
 
 def texto_cobertura(grid: VemosGrid) -> str:

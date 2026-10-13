@@ -126,6 +126,7 @@ from . import export_writers
 from . import geoid_utils
 from . import ggf_reader
 from . import vemos
+from . import velar_ar
 from . import qld_reader
 from . import i18n
 
@@ -1189,6 +1190,9 @@ PREVIEW_COL_DELTA_EPOCA = 70
 PREVIEW_COL_EPOCA_OBS = 71
 PREVIEW_N_COLS = 72
 
+# Clave del modelo VEL-Ar (Argentina) dentro de la lista de modelos de la corrección de época
+CLAVE_VELAR = "VELAR"
+
 # Columnas de la tabla de previsualización de "Importar preplot externo"
 # (`_build_tab_preplot`, grupo agregado en la v2.6.0): puntos leídos de
 # un archivo SPS (Omni 3D / mesa de Sercel) o de un CSV genérico, ANTES
@@ -1603,6 +1607,7 @@ class GNSSeismicController(QWidget):
         # Corrección de época por modelo de velocidades VEMOS (v2.74.0, opcional)
         self._import_epoca_aplicada = False  # True si la última previsualización llevó las coordenadas a otra época
         self._vemos_grids = {}  # clave de modelo -> vemos.VemosGrid ya leído
+        self._vemos_ult_n_zona = None
         self._vemos_ult_n_fuera = None  # para no repetir el aviso de "fuera de cobertura" con cada refresco
         self._last_import_preview_summary = None  # (n, matched, within, had_preplot) para re-renderizar al cambiar idioma
         self._preview_filtro_ids = None  # set de índices de `_import_preview` que cumplen la consulta actual, o None si no hay filtro activo (ver `_ejecutar_filtro_preview`)
@@ -5211,6 +5216,7 @@ class GNSSeismicController(QWidget):
         for k in vemos.ORDEN_MODELOS:
             m = vemos.MODELOS[k]
             self.cb_epoca_modelo.addItem(f"{k} · {m['marco']} · {m['t_ini']:.1f}-{m['t_fin']:.1f}", k)
+        self.cb_epoca_modelo.addItem("VEL-Ar v2.0 · POSGAR07 · Argentina (IGN)", CLAVE_VELAR)
         self.cb_epoca_modelo.setSizeAdjustPolicy(
             _valor_enum(QComboBox, "AdjustToMinimumContentsLengthWithIcon", "SizeAdjustPolicy")
         )
@@ -5254,7 +5260,7 @@ class GNSSeismicController(QWidget):
         self.lbl_epoca_estado.setWordWrap(True)
         self.lbl_epoca_estado.setStyleSheet(ESTILO_ROTULO_TENUE)
         v_ep.addWidget(self.lbl_epoca_estado)
-        self.lbl_epoca_aviso = self._reg(QLabel(), "epoca_aviso_cobertura")
+        self.lbl_epoca_aviso = QLabel("")
         self.lbl_epoca_aviso.setWordWrap(True)
         self.lbl_epoca_aviso.setStyleSheet(ESTILO_ROTULO_TENUE)
         v_ep.addWidget(self.lbl_epoca_aviso)
@@ -5262,7 +5268,7 @@ class GNSSeismicController(QWidget):
         self.acc_epoca.set_contenido(cont)
 
         self.chk_epoca_aplicar.toggled.connect(self._on_epoca_cambio)
-        self.cb_epoca_modelo.currentIndexChanged.connect(self._on_epoca_cambio)
+        self.cb_epoca_modelo.currentIndexChanged.connect(self._on_epoca_modelo_elegido)
         self.chk_epoca_fecha_archivo.toggled.connect(self._on_epoca_cambio)
         self.spn_epoca_destino.editingFinished.connect(self._on_epoca_cambio)
         self.spn_epoca_manual.editingFinished.connect(self._on_epoca_cambio)
@@ -5279,18 +5285,47 @@ class GNSSeismicController(QWidget):
         if not hasattr(self, "acc_epoca") or not hasattr(self, "chk_epoca_aplicar"):
             return
         if self.chk_epoca_aplicar.isChecked():
-            texto = self.t("acc_epoca_summary", modelo=self.cb_epoca_modelo.currentData(),
+            texto = self.t("acc_epoca_summary", modelo=self._nombre_modelo_epoca(self.cb_epoca_modelo.currentData()),
                            destino=f"{self.spn_epoca_destino.value():.3f}")
         else:
             texto = self.t("acc_epoca_off")
         self.acc_epoca.set_textos(self.t("acc_epoca_title"), texto)
 
+    @staticmethod
+    def _nombre_modelo_epoca(clave):
+        return "VEL-Ar v2.0" if clave == CLAVE_VELAR else clave
+
+    def _on_epoca_modelo_elegido(self, *_args):
+        """Al cambiar de modelo, la época destino sigue a la del marco oficial del
+        país SOLO si todavía tiene el valor por defecto del otro modelo (POSGAR07
+        2006.632 para VEL-Ar, MAGNA-SIRGAS 2018.0 para VEMOS); si el usuario puso
+        otra época, se respeta."""
+        es_velar = self.cb_epoca_modelo.currentData() == CLAVE_VELAR
+        actual = self.spn_epoca_destino.value()
+        if es_velar and abs(actual - vemos.EPOCA_MAGNA_SIRGAS) < 5e-4:
+            self.spn_epoca_destino.setValue(velar_ar.EPOCA_POSGAR07)
+        elif not es_velar and abs(actual - velar_ar.EPOCA_POSGAR07) < 5e-4:
+            self.spn_epoca_destino.setValue(vemos.EPOCA_MAGNA_SIRGAS)
+        if hasattr(self, "btn_epoca_cargar"):
+            self.btn_epoca_cargar.setEnabled(not es_velar)
+        self._on_epoca_cambio()
+
     def _actualizar_estado_epoca(self):
-        """Línea de estado del modelo elegido (cargado/guardado/por descargar)."""
+        """Línea de estado del modelo elegido (cargado/guardado/por descargar) y
+        el aviso de cobertura propio de ese modelo."""
         if not hasattr(self, "lbl_epoca_estado"):
             return
         clave = self.cb_epoca_modelo.currentData()
         g = self._vemos_grids.get(clave)
+        if clave == CLAVE_VELAR:
+            self.lbl_epoca_aviso.setText(self.t("epoca_aviso_velar"))
+            if g is not None:
+                texto = self.t("epoca_estado_cargado", n=len(g), cob=velar_ar.texto_cobertura(g), marco="POSGAR07b")
+            else:
+                texto = self.t("epoca_estado_incluido")
+            self.lbl_epoca_estado.setText(texto)
+            return
+        self.lbl_epoca_aviso.setText(self.t("epoca_aviso_cobertura"))
         if g is not None:
             texto = self.t("epoca_estado_cargado", n=len(g), cob=vemos.texto_cobertura(g),
                            marco=g.marco or vemos.MODELOS[clave]["marco"])
@@ -5353,6 +5388,15 @@ class GNSSeismicController(QWidget):
         g = self._vemos_grids.get(clave)
         if g is not None:
             return g
+        if clave == CLAVE_VELAR:
+            try:
+                g = velar_ar.ModeloVelAr.desde_carpeta(os.path.join(os.path.dirname(os.path.abspath(__file__)), "velar_data"))
+            except Exception as e:
+                QMessageBox.warning(self, self.t("err_title"), self.t("err_velar_carga", error=str(e)))
+                return None
+            self._vemos_grids[clave] = g
+            self._actualizar_estado_epoca()
+            return g
         for ruta in (self._ruta_vemos_incluido(clave), self._ruta_cache_vemos(clave)):
             if g is None and ruta and os.path.exists(ruta):
                 try:
@@ -5407,6 +5451,7 @@ class GNSSeismicController(QWidget):
         self._import_epoca_aplicada = False
         if not hasattr(self, "chk_epoca_aplicar") or not self.chk_epoca_aplicar.isChecked() or not filas:
             self._vemos_ult_n_fuera = None
+            self._vemos_ult_n_zona = None
             return
         clave = self.cb_epoca_modelo.currentData()
         grid = self._obtener_grid_vemos(clave)
@@ -5421,7 +5466,9 @@ class GNSSeismicController(QWidget):
         t_ref = self.spn_epoca_destino.value()
         usar_fecha = self.chk_epoca_fecha_archivo.isChecked()
         t_manual = self.spn_epoca_manual.value()
-        n_ok = n_fuera = n_sin_fecha = n_vigencia = n_parcial = 0
+        es_velar = clave == CLAVE_VELAR
+        nombre = self._nombre_modelo_epoca(clave)
+        n_ok = n_fuera = n_sin_fecha = n_vigencia = n_parcial = n_zona = 0
         desplazamientos = []
         for f in filas:
             t_obs = vemos.epoca_de_fila(f) if usar_fecha else None
@@ -5430,27 +5477,41 @@ class GNSSeismicController(QWidget):
                 if usar_fecha:
                     n_sin_fecha += 1
             altura = f.get("altura_wgs84")
-            r = vemos.cambiar_epoca(grid, f["lat"], f["lon"], altura if altura is not None else 0.0, t_obs, t_ref)
+            altura = altura if altura is not None else 0.0
+            if es_velar:
+                r = velar_ar.cambiar_epoca(grid, f["lat"], f["lon"], altura, t_obs, t_ref)
+            else:
+                r = vemos.cambiar_epoca(grid, f["lat"], f["lon"], altura, t_obs, t_ref)
             if r is None:
                 n_fuera += 1
                 f["epoca_corregida"] = False
                 continue
             f["lat_sin_epoca"], f["lon_sin_epoca"] = f["lat"], f["lon"]
-            f["lat"], f["lon"] = r.lat, r.lon
+            if es_velar and getattr(r, "lat_p07", None) is not None:
+                f["lat"], f["lon"] = r.lat_p07, r.lon_p07
+            else:
+                f["lat"], f["lon"] = r.lat, r.lon
             f["epoca_obs"] = t_obs
             f["epoca_desplaz_m"] = r.desplazamiento_m
             f["epoca_corregida"] = True
             n_ok += 1
             desplazamientos.append(r.desplazamiento_m)
+            if es_velar:
+                continue
             if r.n_nodos < 4:
                 n_parcial += 1
             if vemos.fuera_de_vigencia(clave, t_obs):
                 n_vigencia += 1
+            if vemos.zona_sismica_maule_illapel(f["lat_sin_epoca"], f["lon_sin_epoca"], t_obs, t_ref):
+                n_zona += 1
         self._import_epoca_aplicada = True
         log = self.log_importar.appendPlainText
         if n_ok:
-            log(self.t("log_epoca_resumen", modelo=clave, ok=n_ok, n=len(filas), destino=f"{t_ref:.3f}",
+            log(self.t("log_epoca_resumen", modelo=nombre, ok=n_ok, n=len(filas), destino=f"{t_ref:.3f}",
                        med=sum(desplazamientos) / len(desplazamientos), max=max(desplazamientos)))
+            if es_velar:
+                p07 = abs(t_ref - velar_ar.EPOCA_POSGAR07) < 0.0005
+                log(self.t("log_epoca_velar_p07" if p07 else "log_epoca_velar_b"))
         if n_sin_fecha:
             log(self.t("log_epoca_sin_fecha", n=n_sin_fecha, epoca=f"{t_manual:.3f}"))
         if n_vigencia:
@@ -5458,13 +5519,21 @@ class GNSSeismicController(QWidget):
             log(self.t("log_epoca_vigencia", n=n_vigencia, modelo=clave, ini=f"{m['t_ini']:.1f}", fin=f"{m['t_fin']:.1f}"))
         if n_parcial:
             log(self.t("log_epoca_parcial", n=n_parcial))
+        if n_zona:
+            log(self.t("log_epoca_zona_sismica", n=n_zona, modelo=clave))
+            if n_zona != self._vemos_ult_n_zona:
+                QMessageBox.warning(
+                    self, self.t("warn_epoca_zona_title"),
+                    self.t("warn_epoca_zona_body", n=n_zona, total=len(filas), modelo=clave),
+                )
+        self._vemos_ult_n_zona = n_zona if n_zona else None
         if n_fuera:
-            cob = vemos.texto_cobertura(grid)
+            cob = velar_ar.texto_cobertura(grid) if es_velar else vemos.texto_cobertura(grid)
             log(self.t("log_epoca_fuera", n=n_fuera, cob=cob))
             if n_fuera != self._vemos_ult_n_fuera:
                 QMessageBox.warning(
                     self, self.t("warn_epoca_fuera_title"),
-                    self.t("warn_epoca_fuera_body", n=n_fuera, total=len(filas), modelo=clave, cob=cob),
+                    self.t("warn_epoca_fuera_body", n=n_fuera, total=len(filas), modelo=nombre, cob=cob),
                 )
         self._vemos_ult_n_fuera = n_fuera if n_fuera else None
 

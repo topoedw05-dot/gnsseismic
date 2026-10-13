@@ -101,7 +101,7 @@ confirmar, los puntos se insertan en `POSTPLOT` y se crea una capa de
 puntos en el proyecto de QGIS, simbolizada por tipo.
 
 **Corrección de época opcional (VEMOS).** La sección expandible
-"Corrección de época (VEMOS)" (desactivada por defecto) lleva las
+"Corrección de época (VEMOS / VEL-Ar)" (desactivada por defecto) lleva las
 coordenadas de cada punto, RTK o RTX/PPP, de su época de observación a
 una época destino (2018.000 por defecto, MAGNA-SIRGAS) con los modelos de
 velocidades de SIRGAS VEMOS2022, VEMOS2017, VEMOS2015 o VEMOS2009 (lista
@@ -114,6 +114,13 @@ con "Cargar archivo..."). La cobertura depende del modelo: VEMOS2022 cubre
 sobre todo Sudamérica (hasta 13°N), VEMOS2017 y VEMOS2015 llegan hasta 32°N
 y VEMOS2009 hasta 20°N; los puntos fuera de la zona no se corrigen y se
 avisa. Sólo cambia la época, no el marco de referencia.
+
+Para **Argentina** la lista incluye también **VEL-Ar v2.0** (IGN), que suma
+los saltos y la relajación de los terremotos de Maule (2010) e Illapel
+(2015); con época destino 2006.632 el resultado es POSGAR07. Sus grillas
+vienen en `velar_data/` (ver `velar_data/LEEME.txt`: origen, cita y nota de
+licencia). En el centro-oeste argentino VEMOS no es válido si el intervalo
+cruza un terremoto, y el plugin lo avisa.
 
 ### 3. Preplot Sísmico
 

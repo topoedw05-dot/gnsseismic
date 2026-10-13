@@ -881,7 +881,7 @@ TR = {
     "bd_card_mapeo": {"es": "Mapeo de columnas", "en": "Column mapping"},
     "bd_card_salida": {"es": "Formato de salida", "en": "Output format"},
     # -- Corrección de época con modelos de velocidades VEMOS (v2.74.0) --
-    "acc_epoca_title": {"es": "Corrección de época (VEMOS)", "en": "Epoch correction (VEMOS)"},
+    "acc_epoca_title": {"es": "Corrección de época (VEMOS / VEL-Ar)", "en": "Epoch correction (VEMOS / VEL-Ar)"},
     "acc_epoca_off": {"es": "desactivada", "en": "off"},
     "acc_epoca_summary": {"es": "{modelo} → época {destino}", "en": "{modelo} → epoch {destino}"},
     "chk_epoca_aplicar": {
@@ -891,8 +891,8 @@ TR = {
     "epoca_info": {
         "es": (
             "Lleva cada punto de su época de observación a la época destino sumando el "
-            "movimiento de la corteza que da el modelo de velocidades VEMOS de SIRGAS "
-            "(interpolado entre los 4 nodos de la grilla de 1° que rodean al punto). "
+            "movimiento de la corteza que da el modelo elegido: los modelos de velocidades VEMOS de SIRGAS "
+            "(interpolados entre los 4 nodos de la grilla de 1° que rodean al punto) o VEL-Ar v2.0 del IGN (Argentina). "
             "<br><br>La previsualización muestra las coordenadas planas SIN corregir y las "
             "corregidas, y a la base de datos sólo suben las corregidas. Si la casilla está "
             "apagada no se toca nada. "
@@ -900,14 +900,17 @@ TR = {
             "cubre sobre todo Sudamérica (hasta 13°N), VEMOS2017 y VEMOS2015 llegan hasta México "
             "y el Caribe (32°N) y VEMOS2009 hasta Cuba (20°N). Ninguno cubre el mundo entero; los "
             "puntos fuera de la grilla no se corrigen y el plugin avisa. "
-            "<br><br>Cada modelo está en un marco ITRF distinto y sólo describe el periodo de "
+            "<br><br>Cada modelo VEMOS está en un marco ITRF distinto y sólo describe el periodo de "
             "datos que usó; elige el que corresponda al marco y a la fecha de tu levantamiento "
-            "(no incluye saltos de terremotos). No cambia de marco ITRF, sólo de época."
+            "(no incluye saltos de terremotos). No cambia de marco ITRF, sólo de época. "
+            "<br><br><b>Argentina:</b> en el centro-oeste (aprox. 27°S a 42°S) los terremotos de Maule (2010) e "
+            "Illapel (2015) rompieron el movimiento lineal, y VEMOS no sirve ahí. Usa <b>VEL-Ar v2.0</b>, que incluye "
+            "esos saltos y la relajación posterior y lleva las coordenadas a POSGAR07 (época 2006.632)."
         ),
         "en": (
             "Moves each point from its observation epoch to the target epoch by adding the "
-            "crustal motion given by the SIRGAS VEMOS velocity model (interpolated between the "
-            "4 nodes of the 1° grid around the point). "
+            "crustal motion given by the chosen model: the SIRGAS VEMOS velocity models "
+            "(interpolated between the 4 nodes of the 1° grid around the point) or IGN's VEL-Ar v2.0 (Argentina). "
             "<br><br>The preview shows the planar coordinates WITHOUT correction and the "
             "corrected ones, and only the corrected ones are uploaded to the database. With the "
             "box off nothing is changed. "
@@ -915,9 +918,12 @@ TR = {
             "(up to 13°N), VEMOS2017 and VEMOS2015 reach Mexico and the Caribbean (32°N) and "
             "VEMOS2009 reaches Cuba (20°N). None covers the whole world; points outside the grid "
             "are not corrected and the plugin warns you. "
-            "<br><br>Each model is in a different ITRF frame and only describes the period of "
+            "<br><br>Each VEMOS model is in a different ITRF frame and only describes the period of "
             "data it used; pick the one that matches your survey's frame and date (earthquake "
-            "jumps are not included). It does not change ITRF frame, only epoch."
+            "jumps are not included). It does not change ITRF frame, only epoch. "
+            "<br><br><b>Argentina:</b> in the centre-west (approx. 27°S to 42°S) the Maule (2010) and "
+            "Illapel (2015) earthquakes broke the linear motion, and VEMOS is not valid there. Use <b>VEL-Ar v2.0</b>, which includes "
+            "those jumps and the postseismic relaxation and takes coordinates to POSGAR07 (epoch 2006.632)."
         ),
     },
     "lbl_epoca_modelo": {"es": "Modelo:", "en": "Model:"},
@@ -979,13 +985,48 @@ TR = {
     "warn_epoca_fuera_body": {
         "es": (
             "{n} de {total} puntos están fuera de la cobertura de {modelo} ({cob}) y se dejaron SIN corregir.\n\n"
-            "VEMOS cubre parte de América Latina y el Caribe, y cada modelo tiene su propia zona (VEMOS2022 llega hasta 13°N); no cubre todo el mundo. "
+            "Cada modelo tiene su propia zona de cobertura (VEMOS2022 llega hasta 13°N y cubre parte de América Latina y el Caribe; VEL-Ar sólo cubre Argentina); ninguno cubre todo el mundo. "
             "Prueba con otro modelo, o desactiva la corrección, o usa solo los puntos de esa zona."
         ),
         "en": (
             "{n} of {total} points are outside the coverage of {modelo} ({cob}) and were left UNCORRECTED.\n\n"
-            "VEMOS covers part of Latin America and the Caribbean, and each model has its own area (VEMOS2022 reaches 13°N); it does not cover the whole world. "
+            "Each model has its own coverage area (VEMOS2022 reaches 13°N and covers part of Latin America and the Caribbean; VEL-Ar only covers Argentina); none covers the whole world. "
             "Try another model, turn the correction off, or use only points inside that area."
+        ),
+    },
+    "epoca_aviso_velar": {
+        "es": "VEL-Ar v2.0 (IGN Argentina) incluye los terremotos de Maule 2010 e Illapel 2015. Sólo cubre Argentina; error típico ~5 cm. Con época destino 2006.632 se obtiene POSGAR07.",
+        "en": "VEL-Ar v2.0 (IGN Argentina) includes the 2010 Maule and 2015 Illapel earthquakes. It only covers Argentina; typical error ~5 cm. With target epoch 2006.632 the result is POSGAR07.",
+    },
+    "err_velar_carga": {
+        "es": "No se pudo cargar el modelo VEL-Ar incluido en el plugin ({error}). La corrección de época se desactivó.",
+        "en": "Could not load the VEL-Ar model bundled with the plugin ({error}). Epoch correction was turned off.",
+    },
+    "log_epoca_velar_p07": {
+        "es": "VEL-Ar: coordenadas finales en POSGAR07 (época 2006.632); la altura no se modifica.",
+        "en": "VEL-Ar: final coordinates in POSGAR07 (epoch 2006.632); height is not modified.",
+    },
+    "log_epoca_velar_b": {
+        "es": "VEL-Ar: coordenadas finales en el marco POSGAR07b (IGS14/ITRF2014) a la época indicada; la altura no se modifica.",
+        "en": "VEL-Ar: final coordinates in the POSGAR07b frame (IGS14/ITRF2014) at the given epoch; height is not modified.",
+    },
+    "log_epoca_zona_sismica": {
+        "es": "Corrección de época: {n} puntos están en la zona de los terremotos de Maule/Illapel y el intervalo cruza un terremoto; {modelo} (velocidad lineal) NO es confiable ahí. Para Argentina usa VEL-Ar.",
+        "en": "Epoch correction: {n} points are in the Maule/Illapel earthquake zone and the interval spans an earthquake; {modelo} (linear velocity) is NOT reliable there. For Argentina use VEL-Ar.",
+    },
+    "warn_epoca_zona_title": {"es": "Zona de terremotos Maule/Illapel", "en": "Maule/Illapel earthquake zone"},
+    "warn_epoca_zona_body": {
+        "es": (
+            "{n} de {total} puntos están en la zona afectada por los terremotos de Maule (2010) e Illapel (2015) y su época de "
+            "observación y la época destino quedan a lados distintos de uno de ellos.\n\n"
+            "{modelo} asume velocidad constante y NO incluye esos saltos, así que la corrección puede estar errada en decímetros. "
+            "En Argentina elige el modelo \"VEL-Ar v2.0\"."
+        ),
+        "en": (
+            "{n} of {total} points are in the area affected by the Maule (2010) and Illapel (2015) earthquakes and their observation "
+            "epoch and target epoch fall on different sides of one of them.\n\n"
+            "{modelo} assumes constant velocity and does NOT include those jumps, so the correction may be off by decimetres. "
+            "In Argentina pick the \"VEL-Ar v2.0\" model."
         ),
     },
     "log_epoca_resumen": {
