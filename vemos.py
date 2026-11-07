@@ -161,11 +161,11 @@ def distancia_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def geodetica_a_geocentrica(lat: float, lon: float, h: float = 0.0) -> Tuple[float, float, float]:
-    p, l = math.radians(lat), math.radians(lon)
+    p, lam = math.radians(lat), math.radians(lon)
     n = _A / math.sqrt(1.0 - _E2 * math.sin(p) ** 2)
     return (
-        (n + h) * math.cos(p) * math.cos(l),
-        (n + h) * math.cos(p) * math.sin(l),
+        (n + h) * math.cos(p) * math.cos(lam),
+        (n + h) * math.cos(p) * math.sin(lam),
         (n * (1.0 - _E2) + h) * math.sin(p),
     )
 
@@ -221,9 +221,9 @@ def interpolar_velocidad(grid: VemosGrid, lat: float, lon: float) -> Optional[Tu
 
 def velocidad_geocentrica(lat: float, lon: float, vsn: float, vwe: float) -> Tuple[float, float, float]:
     """(Vx, Vy, Vz) en m/año a partir de la velocidad horizontal local."""
-    p, l = math.radians(lat), math.radians(lon)
-    este = (-math.sin(l), math.cos(l), 0.0)
-    norte = (-math.sin(p) * math.cos(l), -math.sin(p) * math.sin(l), math.cos(p))
+    p, lam = math.radians(lat), math.radians(lon)
+    este = (-math.sin(lam), math.cos(lam), 0.0)
+    norte = (-math.sin(p) * math.cos(lam), -math.sin(p) * math.sin(lam), math.cos(p))
     return tuple(vwe * este[i] + vsn * norte[i] for i in range(3))  # type: ignore[return-value]
 
 

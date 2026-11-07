@@ -2,6 +2,16 @@
 
 Historial completo y detallado, de la versión más nueva a la más antigua. El `changelog` de `metadata.txt` (el que muestra QGIS y plugins.qgis.org) es un resumen de una línea por versión.
 
+## v2.77.0
+
+A pedido del usuario, se revisó **Preplot Sísmico > Importar capa de QGIS** y su subida a la tabla `PREPLOT`:
+
+- **Línea + estación automática.** Si la capa trae la línea y la estación en columnas separadas (Línea/Track y Estación/Bin elegidas arriba) pero ninguna columna con las dos pegadas —el campo Nombre elegido no es esa concatenación—, el plugin arma el nombre de cada punto (`Station_Text`) como línea + estación con ancho fijo y ceros a la izquierda (línea 1025 + estación 5092 → `10255092`), igual que el preplot generado por el plugin. Los dígitos son los de la pestaña "Importar archivo externo (SPS / QLD)" (4 y 4 por defecto) y se amplían solos si la capa tiene líneas o estaciones más largas.
+- **Aviso al usuario.** Al importar, un mensaje explica que se hizo ese ajuste (con ejemplo y dígitos usados) y el registro lo deja anotado; el nombre armado se ve en la columna Nombre de la previsualización antes de subir.
+- **`Station_Value`.** La subida a PREPLOT ahora llena también `Station_Value` (el valor numérico de `Station_Text`; 0 si el nombre no es puramente numérico, igual que POSTPLOT). Antes quedaba vacío. Lo mismo vale para el preplot generado por el plugin y para el importado de SPS o QLD.
+- **Se sube toda la capa.** Antes, si la capa traía nombres repetidos (por ejemplo solo el número de estación en cada línea), los repetidos se marcaban como duplicados, quedaban sin marcar y no se subían; con la concatenación eso desaparece. Además: las entidades sin geometría o sin nombre que no se pueden importar ahora se avisan (antes se omitían sin decir nada); el registro indica cuántas entidades se leyeron y cuántos puntos quedaron en la previsualización; los valores NULL de los campos de QGIS se tratan como vacíos; después de subir, los duplicados sin marcar ya no desaparecen de la tabla (se quitaban por nombre, ahora por fila) y un mensaje indica cuántos quedaron sin subir y por qué.
+- 6 pruebas nuevas (`TestConcatenarLineaEstacion`). Probado sin pantalla con una capa simulada y una base SQLite real; sin probar en un QGIS real.
+
 ## v2.76.0
 
 Desde la v2.76.0, la sección **"Corrección de época (VEMOS / VEL-Ar)"** de "Importar datos de campo" tiene una quinta opción en la lista de modelos: **VEL-Ar v2.0 · POSGAR07 · Argentina (IGN)**. VEL-Ar es el modelo oficial del Instituto Geográfico Nacional para llevar coordenadas a POSGAR07 (época 2006.632): suma al movimiento lineal los saltos cosísmicos y la relajación postsísmica de los terremotos de Maule (2010.159) e Illapel (2015.710), que un modelo de velocidad constante como VEMOS no puede describir en el centro-oeste argentino (aprox. 28°S a 40°S).

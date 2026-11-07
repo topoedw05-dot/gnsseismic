@@ -70,9 +70,9 @@ _HELMERT_R = (7.19998e-10, -4.40003e-10, 5.0e-11)
 # Geometría
 # --------------------------------------------------------------------------
 def geodetica_a_geocentrica(lat: float, lon: float, h: float = 0.0) -> Tuple[float, float, float]:
-    p, l = math.radians(lat), math.radians(lon)
+    p, lam = math.radians(lat), math.radians(lon)
     n = _A / math.sqrt(1.0 - _E2 * math.sin(p) ** 2)
-    return ((n + h) * math.cos(p) * math.cos(l), (n + h) * math.cos(p) * math.sin(l),
+    return ((n + h) * math.cos(p) * math.cos(lam), (n + h) * math.cos(p) * math.sin(lam),
             (n * (1.0 - _E2) + h) * math.sin(p))
 
 
@@ -111,8 +111,8 @@ def _utm(lat: float, lon: float, lon0: float = MERIDIANO_CENTRAL, k0: float = 0.
 
 
 def _neu_a_xyz(lat: float, lon: float, n: float, e: float, u: float) -> Tuple[float, float, float]:
-    p, l = math.radians(lat), math.radians(lon)
-    sp, cp, sl, cl = math.sin(p), math.cos(p), math.sin(l), math.cos(l)
+    p, lam = math.radians(lat), math.radians(lon)
+    sp, cp, sl, cl = math.sin(p), math.cos(p), math.sin(lam), math.cos(lam)
     return (-sl * e - sp * cl * n + cp * cl * u,
             cl * e - sp * sl * n + cp * sl * u,
             cp * n + sp * u)

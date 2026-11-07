@@ -130,8 +130,11 @@ líneas/estaciones) o **Línea 2D** (dos puntos, u origen + azimut +
 longitud), al estilo GPSeismic. También importa un preplot ya armado en
 otro software: un archivo **SPS** (SEG rev. 2.1), un archivo **.qld**
 ("QLD9", formato binario propietario, leído con un parser propio), o una
-capa de puntos ya cargada en QGIS (Shapefile, GeoPackage, CSV). Todo se
-guarda en la tabla `PREPLOT`.
+capa de puntos ya cargada en QGIS (Shapefile, GeoPackage, CSV). Si la capa
+no trae una columna con la línea y la estación pegadas, el plugin las
+concatena solo (por ejemplo 1025 + 5092 → `10255092`), lo guarda como
+`Station_Text` y `Station_Value`, y avisa al usuario. Todo se guarda en la
+tabla `PREPLOT`.
 
 ### 4. Base de Datos
 

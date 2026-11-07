@@ -44,3 +44,63 @@ def station_value_numerico(nombre: Optional[str]) -> float:
     POSTPLOT: el nombre si es puramente numérico, 0 si no."""
     n = (nombre or "").strip()
     return float(n) if n.isdigit() else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Línea + estación -> nombre del punto (Station_Text) y Station_Value
+# ---------------------------------------------------------------------------
+# Un preplot sísmico nombra cada punto con la línea y la estación pegadas, con
+# ancho fijo (línea 1025 + estación 5092 -> "10255092"); ese texto es el
+# Station_Text y su valor numérico (10255092) es el Station_Value. Si una capa
+# de QGIS trae la línea y la estación en columnas separadas pero ninguna
+# columna con las dos pegadas, el plugin la arma con estas funciones.
+
+def _es_vacio(valor) -> bool:
+    return valor is None or str(valor).strip() == ""
+
+
+def _texto_numero(valor, digitos: int) -> str:
+    """Un número de línea/estación como texto de ancho fijo (ceros a la
+    izquierda). Los valores no numéricos ("A", "L1") se dejan tal cual."""
+    s = str(valor).strip()
+    try:
+        f = float(s)
+    except ValueError:
+        return s
+    if f.is_integer():
+        return str(int(f)).zfill(max(int(digitos), 1))
+    return str(f)
+
+
+def concatenar_linea_estacion(track, bin_, line_digits: int = 4, station_digits: int = 4) -> Optional[str]:
+    """Nombre de punto = línea + estación con ancho fijo, o None si falta
+    alguna de las dos."""
+    if _es_vacio(track) or _es_vacio(bin_):
+        return None
+    return _texto_numero(track, line_digits) + _texto_numero(bin_, station_digits)
+
+
+def nombre_ya_concatenado(nombre, track, bin_, line_digits: int = 4, station_digits: int = 4) -> bool:
+    """True si `nombre` ya es la línea + la estación pegadas, con ceros a la
+    izquierda (10255092) o sin ellos (10255092 también si 1025 y 5092 traen
+    4 dígitos; "15092" para línea 1 y estación 5092)."""
+    if _es_vacio(nombre) or _es_vacio(track) or _es_vacio(bin_):
+        return False
+    n = str(nombre).strip().upper()
+    con_ceros = concatenar_linea_estacion(track, bin_, line_digits, station_digits)
+    sin_ceros = concatenar_linea_estacion(track, bin_, 1, 1)
+    return n in {(con_ceros or "").upper(), (sin_ceros or "").upper()}
+
+
+def digitos_de_numeros(valores, minimo: int = 1) -> int:
+    """Cantidad de dígitos que hace falta para escribir el mayor de los
+    `valores` (parte entera), nunca menos que `minimo`."""
+    mayor = max(int(minimo), 1)
+    for v in valores:
+        if _es_vacio(v):
+            continue
+        try:
+            mayor = max(mayor, len(str(abs(int(float(str(v).strip()))))))
+        except ValueError:
+            continue
+    return mayor

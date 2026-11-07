@@ -3810,6 +3810,37 @@ class TestVemos(unittest.TestCase):
 
 
 
+class TestConcatenarLineaEstacion(unittest.TestCase):
+    """Nombre de punto (Station_Text) = línea + estación, y su Station_Value, para
+    capas de QGIS que no traen esa columna (módulo punto_nombre)."""
+
+    def test_concatena_con_ceros_a_la_izquierda(self):
+        self.assertEqual(punto_nombre.concatenar_linea_estacion(1025, 5092), "10255092")
+        self.assertEqual(punto_nombre.concatenar_linea_estacion("52", "7.0", 4, 4), "00520007")
+        self.assertEqual(punto_nombre.concatenar_linea_estacion(1, 12, 3, 5), "00100012")
+
+    def test_falta_linea_o_estacion(self):
+        self.assertIsNone(punto_nombre.concatenar_linea_estacion(1025, None))
+        self.assertIsNone(punto_nombre.concatenar_linea_estacion("", 5092))
+
+    def test_valores_no_numericos_se_dejan_tal_cual(self):
+        self.assertEqual(punto_nombre.concatenar_linea_estacion("A", 12, 2, 4), "A0012")
+
+    def test_nombre_ya_concatenado(self):
+        self.assertTrue(punto_nombre.nombre_ya_concatenado("10255092", 1025, 5092))
+        self.assertTrue(punto_nombre.nombre_ya_concatenado("15092", 1, 5092))      # sin ceros
+        self.assertFalse(punto_nombre.nombre_ya_concatenado("5092", 1025, 5092))   # solo la estación
+        self.assertFalse(punto_nombre.nombre_ya_concatenado("", 1025, 5092))
+
+    def test_digitos_de_numeros(self):
+        self.assertEqual(punto_nombre.digitos_de_numeros([10255, 3, None, "12"], 4), 5)
+        self.assertEqual(punto_nombre.digitos_de_numeros([1025, 1026], 4), 4)
+
+    def test_station_value_de_la_concatenacion(self):
+        nombre = punto_nombre.concatenar_linea_estacion(1025, 5092)
+        self.assertEqual(punto_nombre.station_value_numerico(nombre), 10255092.0)
+
+
 class TestVelAr(unittest.TestCase):
     """VEL-Ar v2.0 (IGN Argentina) con las grillas incluidas. Los valores de
     referencia salen del programa oficial `velar` (IGN, versión Linux) ejecutado

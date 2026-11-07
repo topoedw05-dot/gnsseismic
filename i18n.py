@@ -735,6 +735,56 @@ TR = {
         "es": "Subir seleccionados a PREPLOT",
         "en": "Upload selected to PREPLOT",
     },
+    "log_preplot_capa_resumen": {
+        "es": "Capa \"{capa}\": {leidas} entidades leídas, {n} puntos en la previsualización.",
+        "en": "Layer \"{capa}\": {leidas} features read, {n} points in the preview.",
+    },
+    "log_preplot_capa_omitidas": {
+        "es": "Capa: entidades NO importadas: {sin_geom} sin geometría y {sin_nombre} sin nombre (ni línea + estación).",
+        "en": "Layer: features NOT imported: {sin_geom} with no geometry and {sin_nombre} with no name (nor line + station).",
+    },
+    "warn_preplot_capa_omitidas_title": {"es": "Entidades de la capa sin importar", "en": "Layer features not imported"},
+    "warn_preplot_capa_omitidas_body": {
+        "es": (
+            "De las {leidas} entidades de la capa \"{capa}\", {n} no se pudieron importar y NO se subirán: "
+            "{sin_geom} sin geometría y {sin_nombre} sin nombre (el campo Nombre vacío y sin línea + estación para armarlo).\n\n"
+            "Revisa esas entidades en la capa, o elige otro campo de Nombre / los campos de Línea y Estación."
+        ),
+        "en": (
+            "Of the {leidas} features in layer \"{capa}\", {n} could not be imported and will NOT be uploaded: "
+            "{sin_geom} with no geometry and {sin_nombre} with no name (empty Name field and no line + station to build one).\n\n"
+            "Check those features in the layer, or pick another Name field / the Line and Station fields."
+        ),
+    },
+    "log_preplot_capa_concatenado": {
+        "es": "Capa sin columna línea + estación: se armó el nombre (Station_Text) de {n} puntos pegando línea ({ld} dígitos) + estación ({sd} dígitos), p. ej. {ejemplo}. Station_Value será ese mismo valor numérico.",
+        "en": "Layer with no line + station column: the name (Station_Text) of {n} points was built by joining line ({ld} digits) + station ({sd} digits), e.g. {ejemplo}. Station_Value will be that same numeric value.",
+    },
+    "info_preplot_concatenado_title": {"es": "Se ajustó el nombre de los puntos", "en": "Point names were adjusted"},
+    "info_preplot_concatenado_body": {
+        "es": (
+            "La capa \"{capa}\" no traía una columna con la línea y la estación juntas, así que el plugin las concatenó "
+            "automáticamente para los {n} puntos: línea ({ld} dígitos) + estación ({sd} dígitos), por ejemplo {ejemplo}.\n\n"
+            "Ese valor se guardará en PREPLOT como Station_Text (texto) y Station_Value (número). Puedes revisarlo en la "
+            "columna Nombre de la previsualización antes de subir. Los dígitos mínimos (4 y 4 por defecto) se cambian en la "
+            "pestaña \"Importar archivo externo (SPS / QLD)\"; si la capa tiene líneas o estaciones más largas se amplían solos."
+        ),
+        "en": (
+            "Layer \"{capa}\" had no column with the line and station together, so the plugin joined them "
+            "automatically for all {n} points: line ({ld} digits) + station ({sd} digits), e.g. {ejemplo}.\n\n"
+            "That value will be stored in PREPLOT as Station_Text (text) and Station_Value (number). You can check it in the "
+            "Name column of the preview before uploading. The minimum digits (4 and 4 by default) are changed in the "
+            "\"Import external file (SPS / QLD)\" tab; if the layer has longer lines or stations they widen automatically."
+        ),
+    },
+    "log_preplot_ext_pendientes": {
+        "es": "{n} puntos quedaron SIN subir (desmarcados como duplicados) y siguen en la previsualización.",
+        "en": "{n} points were NOT uploaded (unchecked as duplicates) and remain in the preview.",
+    },
+    "msg_preplot_saved_pendientes": {
+        "es": "{n} puntos NO se subieron porque estaban sin marcar (posibles duplicados: ya existen en PREPLOT o se repiten en la previsualización). Siguen en la tabla; marca su casilla \"Incluir\" y vuelve a subir si quieres subirlos.",
+        "en": "{n} points were NOT uploaded because they were unchecked (possible duplicates: already in PREPLOT or repeated in the preview). They stay in the table; tick their \"Include\" box and upload again if you want them.",
+    },
     "log_preplot_ext_saved": {
         "es": "{n} puntos de preplot externo guardados en PREPLOT.",
         "en": "{n} external preplot points saved to PREPLOT.",

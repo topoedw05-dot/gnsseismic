@@ -589,6 +589,29 @@ def _track_bin_heuristic(name: str, line_digits: int):
     return n[:line_digits], n[line_digits:]
 
 
+def _attr_o_none(valor):
+    """Valor de un campo de QGIS como objeto Python, con None si es NULL (en
+    PyQGIS un campo vacío llega como un QVariant nulo, no como None)."""
+    if valor is None:
+        return None
+    es_nulo = getattr(valor, "isNull", None)
+    if callable(es_nulo) and es_nulo():
+        return None
+    return valor
+
+
+def _entero_si_corresponde(valor):
+    """Línea/estación como entero cuando el valor lo es ("0052" -> 52, 52.0 ->
+    52); si no es un número entero se deja como vino (o None)."""
+    if valor is None or str(valor).strip() == "":
+        return None
+    try:
+        f = float(str(valor).strip())
+    except ValueError:
+        return valor
+    return int(f) if f.is_integer() else f
+
+
 def _normalize_track_key(value):
     """Normaliza un valor de Track (puede venir como int de la tabla
     PREPLOT, o como texto recortado del nombre del punto, ej. "0052"
@@ -4349,6 +4372,7 @@ class GNSSeismicController(QWidget):
                 lon, lat = p.x, p.y
             filas.append({
                 "Station_Text": p.name,
+                "Station_Value": punto_nombre.station_value_numerico(p.name),
                 "Track": p.track,
                 "Bin": p.bin,
                 "Descriptor": p.descriptor,
@@ -4560,16 +4584,20 @@ class GNSSeismicController(QWidget):
         src_crs = layer.crs()
         dest_crs = self._working_crs()
         origen = layer.name()
-        nuevas = []
+        crudas = []
+        n_leidas = n_sin_geom = 0
         try:
             for feat in layer.getFeatures():
+                n_leidas += 1
                 geom = feat.geometry()
                 if geom is None or geom.isEmpty():
+                    n_sin_geom += 1
                     continue
                 wkb_type = geom.wkbType()
                 punto = geom.constGet()
                 if QgsWkbTypes.isMultiType(wkb_type):
                     if punto.numGeometries() == 0:
+                        n_sin_geom += 1
                         continue
                     punto = punto.geometryN(0)
                 x, y = punto.x(), punto.y()
@@ -4579,23 +4607,20 @@ class GNSSeismicController(QWidget):
                 if src_crs != dest_crs:
                     x, y = _transform_xy(x, y, src_crs, dest_crs, self.project)
 
-                nombre = feat[name_field]
+                nombre = _attr_o_none(feat[name_field])
                 nombre = str(nombre).strip() if nombre is not None else ""
-                if not nombre:
-                    continue
-                track = feat[track_field] if track_field else None
-                bin_ = feat[bin_field] if bin_field else None
+                track = _attr_o_none(feat[track_field]) if track_field else None
+                bin_ = _attr_o_none(feat[bin_field]) if bin_field else None
                 if z_field:
-                    z_attr = feat[z_field]
+                    z_attr = _attr_o_none(feat[z_field])
                     if z_attr is not None:
                         z = z_attr
                 if descriptor_field:
-                    desc_val = feat[descriptor_field]
+                    desc_val = _attr_o_none(feat[descriptor_field])
                     descriptor = str(desc_val).strip() if desc_val is not None else ""
                 else:
                     descriptor = ""
-
-                nuevas.append({
+                crudas.append({
                     "origen": origen, "nombre": nombre, "track": track, "bin": bin_,
                     "x": x, "y": y, "z": z, "descriptor": descriptor,
                 })
@@ -4603,10 +4628,62 @@ class GNSSeismicController(QWidget):
             QMessageBox.critical(self, self.t("err_title"), self.t("err_layer_import", error=e))
             return
 
+        # Si la capa trae la línea y la estación en columnas separadas pero
+        # NINGUNA columna con las dos pegadas (el nombre elegido no es esa
+        # concatenación), se arma el nombre del punto (Station_Text) como
+        # línea + estación con ancho fijo, igual que el preplot generado por el
+        # plugin; al subir, Station_Value sale de ese mismo nombre.
+        line_digits = self.spn_ext_digitos_linea.value()
+        station_digits = self.spn_ext_digitos_estacion.value()
+        con_ambos = [r for r in crudas if r["track"] is not None and r["bin"] is not None]
+        concatenar = False
+        if track_field and bin_field and con_ambos:
+            line_digits = punto_nombre.digitos_de_numeros((r["track"] for r in con_ambos), line_digits)
+            station_digits = punto_nombre.digitos_de_numeros((r["bin"] for r in con_ambos), station_digits)
+            ya = sum(
+                1 for r in con_ambos
+                if punto_nombre.nombre_ya_concatenado(r["nombre"], r["track"], r["bin"], line_digits, station_digits)
+            )
+            concatenar = ya * 2 < len(con_ambos)
+
+        nuevas = []
+        n_sin_nombre = n_concatenados = 0
+        for r in crudas:
+            if concatenar:
+                armado = punto_nombre.concatenar_linea_estacion(r["track"], r["bin"], line_digits, station_digits)
+                if armado is not None:
+                    r["nombre"] = armado
+                    n_concatenados += 1
+            if not r["nombre"]:
+                n_sin_nombre += 1
+                continue
+            r["track"] = _entero_si_corresponde(r["track"])
+            r["bin"] = _entero_si_corresponde(r["bin"])
+            nuevas.append(r)
+
         if not nuevas:
             QMessageBox.warning(self, self.t("warn_layer_no_points_title"), self.t("warn_layer_no_points_body"))
             return
+        log = self.log_preplot.appendPlainText
+        log(self.t("log_preplot_capa_resumen", capa=origen, leidas=n_leidas, n=len(nuevas)))
+        omitidas = n_sin_geom + n_sin_nombre
+        if omitidas:
+            log(self.t("log_preplot_capa_omitidas", sin_geom=n_sin_geom, sin_nombre=n_sin_nombre))
+            self.btn_toggle_log_preplot.setChecked(True)
+            QMessageBox.warning(
+                self, self.t("warn_preplot_capa_omitidas_title"),
+                self.t("warn_preplot_capa_omitidas_body", capa=origen, n=omitidas, leidas=n_leidas,
+                       sin_geom=n_sin_geom, sin_nombre=n_sin_nombre),
+            )
         self._agregar_preplot_ext_preview(nuevas)
+        if concatenar and n_concatenados:
+            ejemplo = nuevas[0]["nombre"]
+            log(self.t("log_preplot_capa_concatenado", n=n_concatenados, ld=line_digits, sd=station_digits, ejemplo=ejemplo))
+            QMessageBox.information(
+                self, self.t("info_preplot_concatenado_title"),
+                self.t("info_preplot_concatenado_body", capa=origen, n=n_concatenados, ld=line_digits,
+                       sd=station_digits, ejemplo=ejemplo),
+            )
 
     def _agregar_preplot_ext_preview(self, nuevas):
         """Agrega `nuevas` (de un SPS o un CSV recién leído) a la
@@ -4713,6 +4790,7 @@ class GNSSeismicController(QWidget):
                 lon, lat = f["x"], f["y"]
             filas.append({
                 "Station_Text": f["nombre"],
+                "Station_Value": punto_nombre.station_value_numerico(f["nombre"]),
                 "Track": f.get("track"),
                 "Bin": f.get("bin"),
                 "Descriptor": f.get("descriptor", ""),
@@ -4731,13 +4809,21 @@ class GNSSeismicController(QWidget):
             QMessageBox.critical(self, self.t("err_title"), self.t("err_preplot_save", error=e, trace=traceback.format_exc()))
             return
 
-        subidos = {f["nombre"].strip().upper() for f in seleccionados}
-        self._preplot_ext_preview = [f for f in self._preplot_ext_preview if f["nombre"].strip().upper() not in subidos]
+        # Se retiran de la previsualización EXACTAMENTE las filas subidas (por
+        # identidad, no por nombre: un duplicado sin marcar con el mismo nombre
+        # de uno subido no debe desaparecer sin haberse subido).
+        subidos = {id(f) for f in seleccionados}
+        self._preplot_ext_preview = [f for f in self._preplot_ext_preview if id(f) not in subidos]
+        pendientes = len(self._preplot_ext_preview)
         self._llenar_tabla_preplot_ext()
         self._actualizar_capa_provisional_preplot_ext()
         self.actualizar_conteos()
         self.log_preplot.appendPlainText(self.t("log_preplot_ext_saved", n=n))
-        QMessageBox.information(self, self.t("ok_title"), self.t("msg_preplot_saved_body", n=n))
+        mensaje = self.t("msg_preplot_saved_body", n=n)
+        if pendientes:
+            self.log_preplot.appendPlainText(self.t("log_preplot_ext_pendientes", n=pendientes))
+            mensaje += "\n\n" + self.t("msg_preplot_saved_pendientes", n=pendientes)
+        QMessageBox.information(self, self.t("ok_title"), mensaje)
 
     # -- Sección: Importar datos de campo (antes "Importar .dc"; desde la
     # v2.8.0 soporta Trimble .dc e Hi-Target CSV, desde la v2.15.0 también
