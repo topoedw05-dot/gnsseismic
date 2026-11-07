@@ -699,6 +699,234 @@ def count_replace_matches(conn: sqlite3.Connection, table: str, column: str, sea
     return conn.execute(sql, params).fetchone()[0]
 
 
+def column_declared_type(conn: sqlite3.Connection, table: str, column: str) -> str:
+    """Tipo declarado (en mayúsculas) de `table.column`, tal como lo da
+    `PRAGMA table_info` ("TEXT", "INT", "DOUBLE", "FLOAT", "DATETIME"...)."""
+    if table not in DELETABLE_TABLES:
+        raise ValueError(f"No se permite actualizar la tabla {table} desde este panel.")
+    for fila in conn.execute(f"PRAGMA table_info([{table}])").fetchall():  # nosec B608
+        if fila[1] == column:
+            return str(fila[2] or "").upper()
+    raise ValueError(f"'{column}' no es una columna real de {table}.")
+
+
+def convertir_valor_columna(tipo: str, texto: str):
+    """Convierte el `texto` escrito por el usuario al valor que se guarda en
+    una columna de tipo declarado `tipo`: `None` (celda vacía) si el texto está
+    vacío, un entero para columnas INT, un decimal para DOUBLE/FLOAT/REAL, y el
+    texto tal cual para el resto (TEXT, DATETIME). Lanza `ValueError` si una
+    columna numérica recibe algo que no es un número (aceptando la coma como
+    separador decimal)."""
+    t = (tipo or "").upper()
+    if texto.strip() == "":
+        return None
+    numerico = texto.strip().replace(",", ".")
+    if "INT" in t:
+        try:
+            f = float(numerico)
+        except ValueError:
+            raise ValueError("entero") from None
+        if not f.is_integer():
+            raise ValueError("entero")
+        return int(f)
+    if any(k in t for k in ("DOUB", "FLOA", "REAL", "NUM", "DEC")):
+        try:
+            return float(numerico)
+        except ValueError:
+            raise ValueError("decimal") from None
+    return texto
+
+
+# --- Alcance de la actualización en bloque = filas de la consulta (v2.79.1) --
+#
+# "Actualizar sólo las filas de la consulta actual" funciona con CUALQUIER
+# consulta que lea UNA sola tabla (POSTPLOT/PREPLOT/COMPARACION): condiciones
+# WHERE tan complejas como se quiera (AND/OR/paréntesis/subconsultas de
+# filtro), alias de tabla, DISTINCT, ORDER BY y LIMIT/OFFSET. Sólo se rechaza
+# lo que no corresponde a filas reales de una sola tabla: JOIN (o varias
+# tablas en el FROM), UNION/INTERSECT/EXCEPT, GROUP BY/HAVING y WITH.
+# En vez de reescribir el WHERE a ojo, se arma
+# `SELECT ID FROM <tabla [alias]> <WHERE ... ORDER BY ... LIMIT ...>` con el
+# resto de la consulta tal cual y se usa como `WHERE ID IN (...)`.
+
+_SCOPE_CLAUSE_WORDS = {"WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "WINDOW"}
+_SCOPE_JOIN_WORDS = {"JOIN", "NATURAL", "CROSS", "INNER", "LEFT", "RIGHT", "FULL", "OUTER"}
+_SCOPE_SETOP_WORDS = {"UNION", "INTERSECT", "EXCEPT"}
+_SCOPE_TABLE_RE = re.compile(
+    r"""^(?:(?:main)\s*\.\s*)?(?:"(?P<q1>[^"]+)"|\[(?P<q2>[^\]]+)\]|`(?P<q3>[^`]+)`|(?P<n>[A-Za-z_]\w*))"""
+    r"""(?:\s+(?:AS\s+)?(?:"[^"]+"|\[[^\]]+\]|`[^`]+`|(?!(?:AS)\b)[A-Za-z_]\w*))?$""",
+    re.IGNORECASE,
+)
+
+
+def _scan_top_level(sql: str):
+    """Recorre `sql` y devuelve (texto_sin_comentarios, palabras_de_nivel_0,
+    comas_de_nivel_0). Una "palabra de nivel 0" es una palabra suelta fuera de
+    comillas, corchetes y paréntesis: (inicio, fin, MAYÚSCULAS). Así, un JOIN o
+    un FROM dentro de una subconsulta o de un texto entre comillas no cuenta."""
+    out = []
+    i, n = 0, len(sql)
+    while i < n:  # 1) quitar comentarios respetando las comillas
+        c = sql[i]
+        if c in ("'", '"', "`"):
+            j = i + 1
+            while j < n:
+                if sql[j] == c:
+                    if j + 1 < n and sql[j + 1] == c:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            out.append(sql[i:j + 1]); i = j + 1
+        elif c == "[":
+            j = sql.find("]", i)
+            j = n - 1 if j < 0 else j
+            out.append(sql[i:j + 1]); i = j + 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            out.append(" "); i = n if j < 0 else j + 2
+        else:
+            out.append(c); i += 1
+    limpio = "".join(out).strip().rstrip(";").strip()
+
+    palabras, comas = [], []
+    depth, i, n = 0, 0, len(limpio)
+    while i < n:  # 2) palabras y comas de nivel 0
+        c = limpio[i]
+        if c in ("'", '"', "`"):
+            j = i + 1
+            while j < n:
+                if limpio[j] == c:
+                    if j + 1 < n and limpio[j + 1] == c:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = j + 1
+        elif c == "[":
+            j = limpio.find("]", i)
+            i = n if j < 0 else j + 1
+        elif c == "(":
+            depth += 1; i += 1
+        elif c == ")":
+            depth = max(0, depth - 1); i += 1
+        elif c == "," and depth == 0:
+            comas.append(i); i += 1
+        elif (c.isalpha() or c == "_") and depth == 0:
+            j = i
+            while j < n and (limpio[j].isalnum() or limpio[j] == "_"):
+                j += 1
+            palabras.append((i, j, limpio[i:j].upper())); i = j
+        elif c.isalnum() or c == "_":
+            while i < n and (limpio[i].isalnum() or limpio[i] == "_"):
+                i += 1
+        else:
+            i += 1
+    return limpio, palabras, comas
+
+
+def update_scope_from_query(sql: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Analiza la consulta `sql` de la consola y devuelve
+    (tabla, subconsulta_de_IDs, motivo_del_rechazo):
+
+    - OK: (TABLA_EN_MAYÚSCULAS, "SELECT ID FROM ... [WHERE/ORDER BY/LIMIT]", None)
+      -- la subconsulta trae el ID de EXACTAMENTE las filas que devuelve la
+      consulta (respeta WHERE, ORDER BY y LIMIT/OFFSET).
+    - Rechazo: (None, None, motivo) con motivo en {"vacia", "no_select",
+      "with", "join", "union", "group", "tabla", "no_analizable"}; el llamador
+      traduce el motivo a un mensaje para el usuario."""
+    if not (sql or "").strip():
+        return None, None, "vacia"
+    if not is_select_only(sql):
+        return None, None, "no_select"
+    limpio, palabras, comas = _scan_top_level(sql)
+    if not palabras or palabras[0][2] == "WITH":
+        return None, None, "with"
+    if palabras[0][2] != "SELECT":
+        return None, None, "no_select"
+    if any(w[2] in _SCOPE_SETOP_WORDS for w in palabras):
+        return None, None, "union"
+    idx_from = next((k for k, w in enumerate(palabras) if w[2] == "FROM"), None)
+    if idx_from is None:
+        return None, None, "no_analizable"
+    if any(w[2] in _SCOPE_JOIN_WORDS for w in palabras[idx_from:]):
+        return None, None, "join"
+    ini_tabla = palabras[idx_from][1]
+    k_clausula = next((k for k in range(idx_from + 1, len(palabras)) if palabras[k][2] in _SCOPE_CLAUSE_WORDS), None)
+    fin_tabla = palabras[k_clausula][0] if k_clausula is not None else len(limpio)
+    if any(ini_tabla <= c < fin_tabla for c in comas):
+        return None, None, "join"   # "FROM a, b" = join implícito
+    if any(palabras[k][2] in ("GROUP", "HAVING") for k in range(idx_from + 1, len(palabras))):
+        return None, None, "group"
+    tabla_txt = limpio[ini_tabla:fin_tabla].strip()
+    m = _SCOPE_TABLE_RE.match(tabla_txt)
+    if not m:
+        return None, None, "no_analizable"
+    tabla = (m.group("q1") or m.group("q2") or m.group("q3") or m.group("n") or "").upper()
+    if tabla not in DELETABLE_TABLES:
+        return None, None, "tabla"
+    resto = limpio[fin_tabla:].strip()
+    # tabla ya validada contra DELETABLE_TABLES; el resto es texto de la consulta SELECT del propio usuario (ya pasó is_select_only)
+    return tabla, f"SELECT ID FROM {tabla_txt} {resto}".strip(), None  # nosec B608
+
+
+def _scope_clause(ids_sql: Optional[str]) -> str:
+    return f" WHERE ID IN ({ids_sql})" if ids_sql and ids_sql.strip() else ""
+
+
+def count_table_rows(conn: sqlite3.Connection, table: str, ids_sql: Optional[str] = None) -> int:
+    """Cantidad de filas de `table` que cambiaría `update_whole_column`
+    (todas, o sólo las de `ids_sql` -- ver `update_scope_from_query`)."""
+    if table not in DELETABLE_TABLES:
+        raise ValueError(f"No se permite actualizar la tabla {table} desde este panel.")
+    # `table` validado arriba; `ids_sql` sale de la consulta SELECT que el propio usuario escribió en su editor de SQL (ya pasó is_select_only)
+    return conn.execute(f"SELECT COUNT(*) FROM [{table}]{_scope_clause(ids_sql)}").fetchone()[0]  # nosec B608
+
+
+def column_sample_values(
+    conn: sqlite3.Connection, table: str, column: str, limit: int = 5, ids_sql: Optional[str] = None,
+):
+    """(cantidad de valores distintos, primeros `limit` valores distintos) de
+    `table.column` (en todas las filas, o sólo las de `ids_sql`), para
+    mostrarle al usuario qué datos va a pisar una actualización."""
+    if table not in DELETABLE_TABLES:
+        raise ValueError(f"No se permite actualizar la tabla {table} desde este panel.")
+    if column not in set(table_column_names(conn, table)):
+        raise ValueError(f"'{column}' no es una columna real de {table}.")
+    w = _scope_clause(ids_sql)
+    # `table`/`column` ya validados arriba; `ids_sql` ver count_table_rows
+    distintos = conn.execute(f"SELECT COUNT(*) FROM (SELECT DISTINCT [{column}] FROM [{table}]{w})").fetchone()[0]  # nosec B608
+    filas = conn.execute(f"SELECT DISTINCT [{column}] FROM [{table}]{w} LIMIT ?", (int(limit),)).fetchall()  # nosec B608
+    return distintos, [f[0] for f in filas]
+
+
+def update_whole_column(
+    conn: sqlite3.Connection, table: str, column: str, value, ids_sql: Optional[str] = None,
+) -> int:
+    """Escribe `value` (ya convertido con `convertir_valor_columna`; `None`
+    deja la celda vacía) en `column` de TODAS las filas de `table`
+    (`UPDATE table SET column = value`) o, con `ids_sql` (ver
+    `update_scope_from_query`), sólo de las filas de la consulta actual. Es la
+    "actualización en bloque de una columna". Nunca toca la columna ID (clave
+    primaria) ni una tabla fuera de `DELETABLE_TABLES`, y valida la columna
+    contra el esquema real. Como `replace_in_column`, sólo debe llamarse
+    después de que el usuario confirmó explícitamente en la interfaz.
+    Devuelve la cantidad de filas modificadas."""
+    if table not in DELETABLE_TABLES:
+        raise ValueError(f"No se permite actualizar la tabla {table} desde este panel.")
+    if column == "ID":
+        raise ValueError("No se puede actualizar la columna ID.")
+    if column not in set(table_column_names(conn, table)):
+        raise ValueError(f"'{column}' no es una columna real de {table}.")
+    # `table`/`column` ya validados arriba; el valor va bindeado; `ids_sql` ver count_table_rows
+    cur = conn.execute(f"UPDATE [{table}] SET [{column}] = ?{_scope_clause(ids_sql)}", (value,))  # nosec B608
+    conn.commit()
+    return cur.rowcount
+
+
 def replace_in_column(
     conn: sqlite3.Connection, table: str, column: str,
     search_value: str, replace_value: str, exact: bool,

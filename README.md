@@ -289,7 +289,13 @@ compatibilidad con el software de origen.
 - El panel de consultas de "Base de Datos" sólo permite `SELECT`/`WITH`
   (una sola sentencia, sin `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ATTACH`/
   etc.); para modificar datos usa las otras secciones del plugin, o
-  "Buscar y reemplazar" dentro de la misma sección.
+  "Buscar y reemplazar" dentro de la misma sección. Con el campo "Buscar"
+  vacío, "Reemplazar" actualiza la columna completa (todas las filas de la
+  tabla) con el valor de "Reemplazar por", siempre con una advertencia
+  previa de que los datos de esa columna van a cambiar. Marcando "Bloque: solo filas de la consulta
+  actual" el cambio se limita a las filas que trae la consulta SQL de la consola
+  (cualquier consulta de una sola tabla, con todas las condiciones, ORDER BY y
+  LIMIT que quieras; no se admite JOIN, UNION, GROUP BY ni WITH).
 - La exportación SPS genera los archivos de puntos de Fuente (.S01) y
   Receptor (.R01); no genera el archivo relacional (.X01), que requiere
   información de geometría de arreglo/canales que este plugin no modela.

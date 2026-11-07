@@ -1398,6 +1398,148 @@ class TestSearchReplace(unittest.TestCase):
         with self.assertRaises(ValueError):
             db_schema.count_replace_matches(self.conn, "TableDescriptions", "x", "a", exact=True)
 
+    # --- v2.78.0: actualización en bloque de una columna (Buscar vacío) ---
+
+    def test_update_whole_column_text_changes_every_row(self):
+        n = db_schema.update_whole_column(self.conn, "POSTPLOT", "Descriptor", "XX")
+        self.assertEqual(n, 3)
+        vals = {r[0] for r in self.conn.execute("SELECT Descriptor FROM POSTPLOT").fetchall()}
+        self.assertEqual(vals, {"XX"})
+        # las demás columnas no se tocan
+        coms = [r[0] for r in self.conn.execute("SELECT Comment FROM POSTPLOT ORDER BY ID").fetchall()]
+        self.assertEqual(coms, ["ojo revisar despues", "sin novedad", "ojo, base reocupada"])
+
+    def test_update_whole_column_none_empties_column(self):
+        db_schema.update_whole_column(self.conn, "POSTPLOT", "Comment", None)
+        vals = {r[0] for r in self.conn.execute("SELECT Comment FROM POSTPLOT").fetchall()}
+        self.assertEqual(vals, {None})
+
+    def test_update_whole_column_is_not_sql_injectable(self):
+        raro = "x'; DROP TABLE POSTPLOT; --"
+        db_schema.update_whole_column(self.conn, "POSTPLOT", "Descriptor", raro)
+        vals = {r[0] for r in self.conn.execute("SELECT Descriptor FROM POSTPLOT").fetchall()}
+        self.assertEqual(vals, {raro})
+        self.assertEqual(db_schema.count_table_rows(self.conn, "POSTPLOT"), 3)
+
+    def test_update_whole_column_rejects_id_unknown_and_foreign_table(self):
+        with self.assertRaises(ValueError):
+            db_schema.update_whole_column(self.conn, "POSTPLOT", "ID", 1)
+        with self.assertRaises(ValueError):
+            db_schema.update_whole_column(self.conn, "POSTPLOT", "NoExiste", "a")
+        with self.assertRaises(ValueError):
+            db_schema.update_whole_column(self.conn, "TableDescriptions", "Descriptor", "a")
+
+    def test_count_table_rows_and_sample_values(self):
+        self.assertEqual(db_schema.count_table_rows(self.conn, "POSTPLOT"), 3)
+        distintos, ejemplos = db_schema.column_sample_values(self.conn, "POSTPLOT", "Descriptor")
+        self.assertEqual(distintos, 2)
+        self.assertEqual(sorted(ejemplos), ["KI", "SO"])
+        _, pocos = db_schema.column_sample_values(self.conn, "POSTPLOT", "Comment", limit=1)
+        self.assertEqual(len(pocos), 1)
+        with self.assertRaises(ValueError):
+            db_schema.count_table_rows(self.conn, "TableDescriptions")
+        with self.assertRaises(ValueError):
+            db_schema.column_sample_values(self.conn, "POSTPLOT", "NoExiste")
+
+    def test_column_declared_type_and_conversion(self):
+        self.assertEqual(db_schema.column_declared_type(self.conn, "POSTPLOT", "Descriptor"), "TEXT")
+        self.assertEqual(db_schema.column_declared_type(self.conn, "POSTPLOT", "Track"), "INT")
+        self.assertEqual(db_schema.column_declared_type(self.conn, "POSTPLOT", "Local_Easting"), "DOUBLE")
+        with self.assertRaises(ValueError):
+            db_schema.column_declared_type(self.conn, "POSTPLOT", "NoExiste")
+        conv = db_schema.convertir_valor_columna
+        self.assertEqual(conv("TEXT", "KI"), "KI")
+        self.assertIsNone(conv("TEXT", ""))
+        self.assertIsNone(conv("DOUBLE", "  "))
+        self.assertEqual(conv("INT", "12"), 12)
+        self.assertEqual(conv("INT", "12.0"), 12)
+        self.assertEqual(conv("DOUBLE", "3,5"), 3.5)
+        self.assertEqual(conv("FLOAT", "-0.25"), -0.25)
+        with self.assertRaises(ValueError):
+            conv("INT", "12.5")
+        with self.assertRaises(ValueError):
+            conv("INT", "abc")
+        with self.assertRaises(ValueError):
+            conv("DOUBLE", "abc")
+
+    # --- v2.79.x: actualización en bloque limitada a la consulta actual ---
+
+    def _scope(self, sql):
+        tabla, ids_sql, motivo = db_schema.update_scope_from_query(sql)
+        self.assertIsNone(motivo, motivo)
+        return tabla, ids_sql
+
+    def test_update_scope_simple_where(self):
+        tabla, ids_sql = self._scope("SELECT * FROM POSTPLOT WHERE Descriptor = 'KI' ORDER BY ID")
+        self.assertEqual(tabla, "POSTPLOT")
+        self.assertEqual(db_schema.count_table_rows(self.conn, tabla, ids_sql), 2)
+        self.assertEqual(db_schema.count_table_rows(self.conn, tabla), 3)
+        n = db_schema.update_whole_column(self.conn, tabla, "Comment", "revisado", ids_sql)
+        self.assertEqual(n, 2)
+        filas = self.conn.execute("SELECT Descriptor, Comment FROM POSTPLOT ORDER BY ID").fetchall()
+        self.assertEqual(filas, [("KI", "revisado"), ("SO", "sin novedad"), ("KI", "revisado")])
+
+    def test_update_scope_complex_conditions_alias_and_comments(self):
+        # cualquier cantidad de condiciones, paréntesis, alias, minúsculas,
+        # comentarios, saltos de línea y la palabra "join" dentro de un texto
+        sql = (
+            "select p.Station_Text, p.Comment -- columnas\n"
+            "from postplot as p\n"
+            "where (p.Descriptor = 'KI' or p.Descriptor like 'S%')\n"
+            "  and p.Comment not like '%join%' and p.Station_Text in ('A1','A2','A3');"
+        )
+        tabla, ids_sql = self._scope(sql)
+        self.assertEqual(tabla, "POSTPLOT")
+        # A1 'ojo revisar despues' KI, A2 'sin novedad' SO, A3 'ojo, base reocupada' KI -> los 3 cumplen
+        self.assertEqual(db_schema.count_table_rows(self.conn, tabla, ids_sql), 3)
+        sql2 = "SELECT * FROM POSTPLOT p WHERE p.Descriptor = 'KI' AND p.Comment LIKE '%base%'"
+        tabla, ids_sql = self._scope(sql2)
+        self.assertEqual(db_schema.update_whole_column(self.conn, tabla, "Descriptor", "ZZ", ids_sql), 1)
+        self.assertEqual(
+            [r[0] for r in self.conn.execute("SELECT Descriptor FROM POSTPLOT ORDER BY ID").fetchall()],
+            ["KI", "SO", "ZZ"],
+        )
+
+    def test_update_scope_respects_limit_and_order(self):
+        tabla, ids_sql = self._scope("SELECT * FROM POSTPLOT ORDER BY ID DESC LIMIT 1")
+        self.assertEqual(db_schema.update_whole_column(self.conn, tabla, "Comment", "ultimo", ids_sql), 1)
+        coms = [r[0] for r in self.conn.execute("SELECT Comment FROM POSTPLOT ORDER BY ID").fetchall()]
+        self.assertEqual(coms, ["ojo revisar despues", "sin novedad", "ultimo"])
+
+    def test_update_scope_allows_filter_subquery_with_other_table(self):
+        # una subconsulta de filtro (otra tabla dentro de un IN) no es un JOIN de la consulta
+        tabla, ids_sql = self._scope(
+            "SELECT * FROM POSTPLOT WHERE Station_Text IN (SELECT Station_Text FROM PREPLOT)")
+        self.assertEqual(tabla, "POSTPLOT")
+        self.assertEqual(db_schema.count_table_rows(self.conn, tabla, ids_sql), 0)
+
+    def test_update_scope_without_where_is_whole_table(self):
+        tabla, ids_sql = self._scope("SELECT * FROM POSTPLOT")
+        self.assertEqual(db_schema.update_whole_column(self.conn, tabla, "Descriptor", "Z", ids_sql), 3)
+
+    def test_update_scope_rejects_join_union_group_with_and_other_tables(self):
+        motivo = lambda q: db_schema.update_scope_from_query(q)[2]
+        self.assertEqual(motivo("SELECT * FROM POSTPLOT a JOIN PREPLOT b ON a.Station_Text = b.Station_Text"), "join")
+        self.assertEqual(motivo("SELECT * FROM POSTPLOT a LEFT JOIN PREPLOT b ON a.Station_Text = b.Station_Text"), "join")
+        self.assertEqual(motivo("SELECT * FROM POSTPLOT, PREPLOT"), "join")
+        self.assertEqual(motivo("SELECT * FROM POSTPLOT UNION SELECT * FROM POSTPLOT"), "union")
+        self.assertEqual(motivo("SELECT Descriptor, COUNT(*) FROM POSTPLOT GROUP BY Descriptor"), "group")
+        self.assertEqual(motivo("WITH x AS (SELECT 1) SELECT * FROM POSTPLOT"), "with")
+        self.assertEqual(motivo("SELECT * FROM TableDescriptions"), "tabla")
+        self.assertEqual(motivo("DELETE FROM POSTPLOT"), "no_select")
+        self.assertEqual(motivo("   "), "vacia")
+
+    def test_column_sample_values_respects_scope(self):
+        _, ids_sql = self._scope("SELECT * FROM POSTPLOT WHERE Descriptor = 'SO'")
+        distintos, ejemplos = db_schema.column_sample_values(self.conn, "POSTPLOT", "Comment", ids_sql=ids_sql)
+        self.assertEqual((distintos, ejemplos), (1, ["sin novedad"]))
+
+    def test_update_whole_column_numeric_stores_number(self):
+        tipo = db_schema.column_declared_type(self.conn, "POSTPLOT", "Local_Height")
+        db_schema.update_whole_column(self.conn, "POSTPLOT", "Local_Height", db_schema.convertir_valor_columna(tipo, "1500,5"))
+        vals = {r[0] for r in self.conn.execute("SELECT Local_Height FROM POSTPLOT").fetchall()}
+        self.assertEqual(vals, {1500.5})
+
 
 class TestCSVMatcher(unittest.TestCase):
     def setUp(self):

@@ -2,6 +2,36 @@
 
 Historial completo y detallado, de la versión más nueva a la más antigua. El `changelog` de `metadata.txt` (el que muestra QGIS y plugins.qgis.org) es un resumen de una línea por versión.
 
+## v2.79.1
+
+Corrección de la 2.79.0 (reportada por el usuario): la casilla **"Bloque: solo filas de la consulta actual"** rechazaba consultas válidas con el aviso "primero escribe y ejecuta una consulta simple...". Ahora:
+
+- **Vale cualquier consulta de una sola tabla** (POSTPLOT, PREPLOT o COMPARACION), por más condiciones que tenga: AND/OR, paréntesis, LIKE/IN, subconsultas de filtro, alias de tabla (`FROM POSTPLOT p`), DISTINCT, comentarios, saltos de línea, ORDER BY y LIMIT/OFFSET. Antes un analizador demasiado estricto (y que además descartaba cualquier consulta con la palabra "join" aunque fuera dentro de un texto) la rechazaba.
+- **No hace falta ejecutarla antes**: se usa el texto que está en la consola SQL en ese momento.
+- **Sólo se rechaza lo que no apunta a filas de una única tabla**: JOIN (o varias tablas en el FROM), UNION/INTERSECT/EXCEPT, GROUP BY/HAVING y WITH. Cada caso muestra un mensaje distinto que explica por qué y qué hacer. Una subconsulta de filtro con otra tabla dentro de un `IN (...)` sí se acepta, porque sólo filtra.
+- **Cómo se aplica.** El plugin arma `SELECT ID FROM <tabla> <WHERE... ORDER BY... LIMIT...>` con el resto de la consulta tal cual y actualiza `WHERE ID IN (...)`: se cambian exactamente las filas que devuelve la consulta, y ahora **sí se respeta el LIMIT** (en la 2.79.0 se ignoraba). Con DISTINCT se cambian todas las filas de la tabla que cumplen el WHERE, no sólo una por valor distinto.
+- La advertencia sigue mostrando "N fila(s) ... (de M en total; el resto no se toca)" y la respuesta por defecto es "No". 7 pruebas nuevas en lugar de las 3 de la 2.79.0 (290 en total). Probado sin pantalla con SQLite real y diálogo simulado; sin probar en QGIS real.
+
+## v2.79.0
+
+A pedido del usuario (opción 1), la actualización de columna en bloque de **Base de Datos > Buscar y reemplazar** puede limitarse a **las filas de la consulta SQL que está en pantalla**:
+
+- **Casilla "Bloque: solo filas de la consulta actual"** (junto a los botones Buscar/Reemplazar). Desmarcada, todo funciona como en la 2.78.0 (se cambia la columna de toda la tabla). Marcada, y con el campo "Buscar" vacío, sólo se cambian las filas que cumplen el WHERE de la consulta ejecutada: **todas las que coinciden**, no sólo las que se ven en la tabla de resultados (que se recorta a la previsualización). Si la consulta no tiene WHERE, equivale a toda la tabla.
+- **Requisitos (los mismos que el botón "Borrar").** Consulta simple de una sola tabla (POSTPLOT, PREPLOT o COMPARACION), sin JOIN, UNION, GROUP BY ni WITH, ya ejecutada. Si no hay consulta válida, o la tabla elegida en "Tabla" no es la de la consulta, no se toca nada y un mensaje explica qué falta.
+- **Advertencia más clara.** Indica cuántas filas se cambian y de cuántas en total ("12 fila(s) de POSTPLOT que trae la consulta actual (de 3000 en total; el resto no se toca)"), y los ejemplos de valores que se perderán se calculan sólo sobre esas filas. Sigue con respuesta por defecto "No".
+- La casilla no afecta al reemplazo con "Buscar" lleno. Ojo: igual que "Borrar", ignora un LIMIT de la consulta (se cambian todas las filas que cumplen el WHERE).
+- 3 pruebas nuevas (`TestSearchReplace`); 286 en total. Probado sin pantalla con SQLite real y diálogo simulado; sin probar en QGIS real.
+
+## v2.78.0
+
+A pedido del usuario, **Base de Datos > Edición rápida (Buscar y reemplazar)** ahora también sirve para **actualizar una columna completa en bloque**:
+
+- **Cómo se usa.** Se elige la tabla (POSTPLOT, PREPLOT o COMPARACION) y la columna, se deja el campo **Buscar vacío**, se escribe el valor nuevo en **Reemplazar por** y se pulsa **Reemplazar**. Todas las filas de la tabla quedan con ese valor en esa columna. Con "Buscar" lleno el botón sigue reemplazando sólo las filas que coinciden, como antes.
+- **Siempre con advertencia.** Antes de escribir, un mensaje avisa que se van a CAMBIAR LOS DATOS de la columna e indica la tabla, la cantidad de filas, el valor nuevo, cuántos valores distintos hay hoy y algunos ejemplos que se perderán, y que no se puede deshacer. La respuesta por defecto es "No".
+- **Validaciones.** Una columna numérica (entera o decimal) sólo acepta un número (la coma decimal vale); si se escribe otra cosa, no se toca nada y se explica por qué. Con "Reemplazar por" vacío la columna queda vacía (NULL); el aviso lo muestra como "(vacío)". Nunca se modifica la columna `ID` ni tablas fuera de POSTPLOT/PREPLOT/COMPARACION, y el valor siempre se envía como parámetro SQL (no se puede inyectar SQL).
+- **Después de actualizar.** Se actualizan los conteos de la pestaña y, si había una consulta en pantalla, se vuelve a ejecutar para que la tabla muestre los datos nuevos.
+- Textos de ayuda (tooltip del botón, nota de la sección y texto del campo Buscar) actualizados en español e inglés. 7 pruebas nuevas (`TestSearchReplace`: `update_whole_column`, `count_table_rows`, `column_sample_values`, `column_declared_type`, `convertir_valor_columna`). Probado sin pantalla con SQLite real y el diálogo simulado; sin probar en un QGIS real.
+
 ## v2.77.0
 
 A pedido del usuario, se revisó **Preplot Sísmico > Importar capa de QGIS** y su subida a la tabla `PREPLOT`:

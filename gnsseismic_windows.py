@@ -9837,6 +9837,12 @@ class GNSSeismicController(QWidget):
         v_buscar.addLayout(fila_2)
 
         fila_sr_botones = QHBoxLayout()
+        # v2.79.0: la actualización en bloque (Buscar vacío) puede limitarse a
+        # las filas de la consulta SQL que está en pantalla.
+        self.chk_sr_solo_consulta = QCheckBox()
+        self._reg(self.chk_sr_solo_consulta, "chk_sr_solo_consulta", kind="text")
+        self._reg(self.chk_sr_solo_consulta, "tip_chk_sr_solo_consulta", kind="tooltip")
+        fila_sr_botones.addWidget(self.chk_sr_solo_consulta)
         fila_sr_botones.addStretch(1)
         self.btn_sr_buscar = self._boton_barra("bd_tb_search", "tip_btn_sr_search", self.buscar_por_columna)
         self.btn_sr_reemplazar = self._boton_barra("bd_tb_replace", "tip_btn_sr_replace_all", self.reemplazar_por_columna)
@@ -10847,10 +10853,12 @@ class GNSSeismicController(QWidget):
             QMessageBox.warning(self, self.t("warn_missing_data_title"), self.t("err_sr_missing_column"))
             return
         buscar = self.txt_sr_buscar.text()
-        if buscar == "":
-            QMessageBox.information(self, self.t("info_empty_query_title"), self.t("err_sr_missing_search_value"))
-            return
         reemplazar = self.txt_sr_reemplazar.text()
+        if buscar == "":
+            # Sin valor de búsqueda: actualización EN BLOQUE de la columna
+            # completa con el valor de "Reemplazar por" (siempre con advertencia).
+            self._actualizar_columna_completa(tabla, columna, reemplazar)
+            return
         exacto = self.chk_sr_exacto.isChecked()
 
         try:
@@ -10889,6 +10897,93 @@ class GNSSeismicController(QWidget):
         # funcionó, sin que el usuario tenga que volver a apretar nada.
         self.buscar_por_columna()
         self.actualizar_conteos()
+
+    def _actualizar_columna_completa(self, tabla, columna, texto):
+        """"Reemplazar" con el campo "Buscar" vacío: escribe `texto` ("Reemplazar
+        por") en `columna` de TODAS las filas de `tabla` -- actualización en
+        bloque de una columna. Como pisa datos reales, SIEMPRE advierte antes,
+        con la cantidad de filas, el valor nuevo y ejemplos de los valores
+        actuales que se perderán (la respuesta por defecto es "No"). Una
+        columna numérica sólo acepta un número; con "Reemplazar por" vacío la
+        columna queda vacía."""
+        ids_sql = None
+        solo_consulta = self.chk_sr_solo_consulta.isChecked()
+        if solo_consulta:
+            # Sólo las filas de la consulta que está en la consola (se analiza
+            # el texto actual, no hace falta haberla ejecutado): vale cualquier
+            # consulta de UNA tabla (con todas las condiciones que se quiera);
+            # se rechazan JOIN, UNION, GROUP BY y WITH.
+            tabla_q, ids_sql, motivo = db_schema.update_scope_from_query(self.txt_sql.toPlainText())
+            if motivo is not None:
+                QMessageBox.warning(
+                    self, self.t("warn_missing_data_title"),
+                    self.t("warn_sr_scope_" + motivo, tabla=tabla),
+                )
+                return
+            if tabla_q != tabla:
+                QMessageBox.warning(
+                    self, self.t("warn_missing_data_title"),
+                    self.t("warn_sr_otra_tabla", consulta=tabla_q, tabla=tabla),
+                )
+                return
+        try:
+            tipo = db_schema.column_declared_type(self.conn, tabla, columna)
+            valor = db_schema.convertir_valor_columna(tipo, texto)
+        except ValueError as e:
+            clave = {"entero": "err_sr_valor_entero", "decimal": "err_sr_valor_decimal"}.get(str(e))
+            if clave is None:
+                QMessageBox.critical(self, self.t("err_query_title"), str(e))
+            else:
+                QMessageBox.warning(
+                    self, self.t("warn_missing_data_title"),
+                    self.t(clave, columna=columna, tipo=tipo or "?", valor=texto),
+                )
+            return
+        try:
+            n = db_schema.count_table_rows(self.conn, tabla, ids_sql)
+            distintos, ejemplos = db_schema.column_sample_values(self.conn, tabla, columna, ids_sql=ids_sql)
+        except Exception as e:
+            QMessageBox.critical(self, self.t("err_query_title"), str(e))
+            return
+        if n == 0:
+            QMessageBox.information(self, self.t("info_empty_query_title"), self.t("info_sr_tabla_vacia", tabla=tabla))
+            return
+
+        vacio = self.t("sr_valor_vacio")
+        valor_txt = f"\"{texto}\"" if valor is not None else vacio
+        ejemplos_txt = ", ".join(f"\"{e}\"" if e is not None else vacio for e in ejemplos)
+        if distintos > len(ejemplos):
+            ejemplos_txt += ", ..."
+        if solo_consulta:
+            total = db_schema.count_table_rows(self.conn, tabla)
+            alcance = self.t("sr_alcance_consulta", n=n, total=total, tabla=tabla)
+        else:
+            alcance = self.t("sr_alcance_todas", n=n, tabla=tabla)
+        resp = QMessageBox.question(
+            self, self.t("confirm_update_col_title"),
+            self.t(
+                "confirm_update_col_body", n=n, tabla=tabla, columna=columna, valor=valor_txt,
+                distintos=distintos, ejemplos=ejemplos_txt, alcance=alcance,
+            ),
+            MSG_YES | MSG_NO, MSG_NO,
+        )
+        if resp != MSG_YES:
+            return
+
+        try:
+            modificadas = db_schema.update_whole_column(self.conn, tabla, columna, valor, ids_sql)
+        except Exception as e:
+            QMessageBox.critical(self, self.t("err_delete_title"), self.t("err_delete_body", error=e, trace=traceback.format_exc()))
+            return
+        QMessageBox.information(
+            self, self.t("ok_title"),
+            self.t("msg_sr_update_col_ok_body", n=modificadas, tabla=tabla, columna=columna, valor=valor_txt),
+        )
+        self.actualizar_conteos()
+        # Si había una consulta en pantalla, se vuelve a correr para que la tabla
+        # de abajo muestre ya los datos nuevos.
+        if self.txt_sql.toPlainText().strip():
+            self.ejecutar_consulta()
 
     def _actualizar_capa_provisional_query(self):
         """Crea/actualiza una capa de memoria PROVISIONAL con los puntos

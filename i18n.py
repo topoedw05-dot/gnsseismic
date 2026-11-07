@@ -2814,7 +2814,9 @@ TR = {
             "valor elegidos, igual que una consulta manual.\n"
             "- \"Reemplazar\": escribe el valor de \"Reemplazar por\" en TODAS las "
             "filas que coincidan con la búsqueda, pidiendo confirmación y mostrando "
-            "cuántas filas se van a modificar."
+            "cuántas filas se van a modificar. Con el campo \"Buscar\" VACÍO actualiza "
+            "la columna completa (todas las filas de la tabla) con ese valor, siempre con "
+            "una advertencia de que los datos de la columna van a cambiar."
         ),
         "en": (
             "\"SQL query\" buttons:\n"
@@ -2838,7 +2840,9 @@ TR = {
             "column and value, just like a manual query.\n"
             "- \"Replace\": writes the \"Replace with\" value into EVERY row that "
             "matches the search, asking for confirmation and showing how many rows "
-            "would be changed."
+            "would be changed. With the \"Find\" field EMPTY it updates the whole "
+            "column (every row of the table) with that value, always with a warning "
+            "that the column's data is going to change."
         ),
     },
     "tip_btn_run_query": {
@@ -2874,13 +2878,13 @@ TR = {
         "en": "Searches for the value in the chosen table and column and shows the result below.",
     },
     "tip_btn_sr_replace_all": {
-        "es": "Reemplaza el valor encontrado por el nuevo valor en todas las filas que coincidan (pide confirmación).",
-        "en": "Replaces the found value with the new value in every matching row (asks for confirmation).",
+        "es": "Reemplaza el valor encontrado por el nuevo valor en todas las filas que coincidan (pide confirmación). Con \"Buscar\" vacío, actualiza TODA la columna con el valor de \"Reemplazar por\" (advierte antes de cambiar los datos).",
+        "en": "Replaces the found value with the new value in every matching row (asks for confirmation). With \"Find\" empty, it updates the WHOLE column with the \"Replace with\" value (warns before changing the data).",
     },
     "lbl_sr_table": {"es": "Tabla:", "en": "Table:"},
     "lbl_sr_column": {"es": "Columna:", "en": "Column:"},
     "lbl_sr_search": {"es": "Buscar:", "en": "Find:"},
-    "ph_sr_search": {"es": "Valor a buscar...", "en": "Value to search for..."},
+    "ph_sr_search": {"es": "Valor a buscar (vacío = toda la columna al reemplazar)", "en": "Value to search for (empty = whole column when replacing)"},
     "chk_sr_exact": {"es": "Coincidencia exacta", "en": "Exact match"},
     "lbl_sr_replace": {"es": "Reemplazar por:", "en": "Replace with:"},
     "ph_sr_replace": {
@@ -2917,6 +2921,84 @@ TR = {
     "msg_sr_replace_ok_body": {
         "es": "Se reemplazó el valor en {n} fila(s) de la columna {columna} de {tabla}.",
         "en": "The value was replaced in {n} row(s) of column {columna} of {tabla}.",
+    },
+    "err_sr_valor_entero": {
+        "es": "La columna {columna} es de tipo entero ({tipo}) y \"{valor}\" no es un número entero. Escribe un número entero (o déjalo vacío para vaciar la columna).",
+        "en": "Column {columna} is an integer column ({tipo}) and \"{valor}\" is not a whole number. Type a whole number (or leave it empty to clear the column).",
+    },
+    "err_sr_valor_decimal": {
+        "es": "La columna {columna} es numérica ({tipo}) y \"{valor}\" no es un número. Escribe un número (o déjalo vacío para vaciar la columna).",
+        "en": "Column {columna} is numeric ({tipo}) and \"{valor}\" is not a number. Type a number (or leave it empty to clear the column).",
+    },
+    "info_sr_tabla_vacia": {
+        "es": "La tabla {tabla} no tiene filas: no hay nada para actualizar.",
+        "en": "Table {tabla} has no rows: there is nothing to update.",
+    },
+    "sr_valor_vacio": {"es": "(vacío)", "en": "(empty)"},
+    "confirm_update_col_title": {"es": "Actualizar TODA la columna", "en": "Update the WHOLE column"},
+    "confirm_update_col_body": {
+        "es": (
+            "ATENCIÓN: vas a CAMBIAR LOS DATOS de la columna {columna} de {tabla}.\n\n"
+            "{alcance} quedarán con el valor {valor}. Los valores actuales de la columna "
+            "({distintos} distintos, por ejemplo: {ejemplos}) se perderán.\n\n"
+            "Esto modifica la base de datos real y no se puede deshacer. ¿Seguro que quieres continuar?"
+        ),
+        "en": (
+            "WARNING: you are about to CHANGE THE DATA in column {columna} of {tabla}.\n\n"
+            "{alcance} will get the value {valor}. The current values of the column "
+            "({distintos} distinct, for example: {ejemplos}) will be lost.\n\n"
+            "This modifies the real database and cannot be undone. Are you sure you want to continue?"
+        ),
+    },
+    "chk_sr_solo_consulta": {"es": "Bloque: solo filas de la consulta actual", "en": "Bulk: only rows of the current query"},
+    "tip_chk_sr_solo_consulta": {
+        "es": "Sólo cuando \"Buscar\" está vacío (actualizar columna en bloque): si está marcada, se cambian únicamente las filas que trae la consulta SQL que está en pantalla (el WHERE de esa consulta; todas las que coinciden, no sólo las que se ven en la tabla), en vez de toda la tabla. Vale cualquier consulta de una sola tabla (con todas las condiciones, ORDER BY y LIMIT que quieras); no se admite JOIN, UNION, GROUP BY ni WITH. La tabla de la consulta debe ser la elegida aquí.",
+        "en": "Only when \"Find\" is empty (bulk column update): when checked, only the rows brought back by the SQL query on screen are changed (that query's WHERE; every matching row, not just those shown in the table) instead of the whole table. Any single-table query works (with any conditions, ORDER BY and LIMIT); JOIN, UNION, GROUP BY and WITH are not allowed. The query's table must be the one chosen here.",
+    },
+    "warn_sr_scope_vacia": {
+        "es": "Escribe en la consola SQL la consulta que filtra las filas a cambiar (por ejemplo: SELECT * FROM {tabla} WHERE Descriptor = 'KI'), o desmarca \"solo filas de la consulta actual\" para actualizar toda la tabla.",
+        "en": "Write in the SQL console the query that filters the rows to change (for example: SELECT * FROM {tabla} WHERE Descriptor = 'KI'), or uncheck \"only rows of the current query\" to update the whole table.",
+    },
+    "warn_sr_scope_no_select": {
+        "es": "La consola sólo admite consultas SELECT de lectura; revisa el texto de la consulta (una sola sentencia).",
+        "en": "The console only accepts read-only SELECT queries; check the query text (a single statement).",
+    },
+    "warn_sr_scope_with": {
+        "es": "Las consultas con WITH (CTE) no se pueden usar para limitar el cambio. Reescríbela como un SELECT simple de una sola tabla con sus condiciones en el WHERE.",
+        "en": "WITH (CTE) queries cannot be used to limit the change. Rewrite it as a simple single-table SELECT with its conditions in the WHERE.",
+    },
+    "warn_sr_scope_join": {
+        "es": "La consulta une varias tablas (JOIN o varias tablas en el FROM), así que no hay una única tabla para actualizar. Usa una consulta sobre una sola tabla: puede tener todas las condiciones que quieras en el WHERE.",
+        "en": "The query combines several tables (JOIN or several tables in FROM), so there is no single table to update. Use a query on one table: it can have as many WHERE conditions as you want.",
+    },
+    "warn_sr_scope_union": {
+        "es": "La consulta usa UNION/INTERSECT/EXCEPT, así que no hay una única tabla para actualizar. Usa una consulta sobre una sola tabla.",
+        "en": "The query uses UNION/INTERSECT/EXCEPT, so there is no single table to update. Use a query on one table.",
+    },
+    "warn_sr_scope_group": {
+        "es": "La consulta agrupa filas (GROUP BY/HAVING): cada fila del resultado resume varias filas de la tabla y no se puede saber cuáles cambiar. Usa una consulta sin agrupar.",
+        "en": "The query groups rows (GROUP BY/HAVING): each result row summarizes several table rows, so it is not possible to know which ones to change. Use an ungrouped query.",
+    },
+    "warn_sr_scope_tabla": {
+        "es": "La consulta no es sobre POSTPLOT, PREPLOT ni COMPARACION, que son las tablas que se pueden actualizar desde este panel.",
+        "en": "The query is not on POSTPLOT, PREPLOT or COMPARACION, the tables that can be updated from this panel.",
+    },
+    "warn_sr_scope_no_analizable": {
+        "es": "No pude entender el FROM de la consulta. Escríbela como: SELECT ... FROM POSTPLOT [alias] WHERE ... (una sola tabla).",
+        "en": "I could not understand the query's FROM. Write it as: SELECT ... FROM POSTPLOT [alias] WHERE ... (a single table).",
+    },
+    "warn_sr_otra_tabla": {
+        "es": "La consulta actual es sobre {consulta}, pero la tabla elegida para actualizar es {tabla}. Elige la misma tabla en la lista \"Tabla\" (o ejecuta una consulta sobre {tabla}).",
+        "en": "The current query is on {consulta}, but the table chosen to update is {tabla}. Pick the same table in the \"Table\" list (or run a query on {tabla}).",
+    },
+    "sr_alcance_todas": {"es": "{n} fila(s) de la tabla {tabla}", "en": "All {n} row(s) of table {tabla}"},
+    "sr_alcance_consulta": {
+        "es": "{n} fila(s) de {tabla} que trae la consulta actual (de {total} en total; el resto no se toca)",
+        "en": "{n} row(s) of {tabla} brought back by the current query (out of {total} in total; the rest is untouched)",
+    },
+    "msg_sr_update_col_ok_body": {
+        "es": "Se actualizó la columna {columna} de {tabla} en {n} fila(s) con el valor {valor}.",
+        "en": "Column {columna} of {tabla} was updated in {n} row(s) with the value {valor}.",
     },
     "btn_delete_query_results": {
         "es": "Borrar",
